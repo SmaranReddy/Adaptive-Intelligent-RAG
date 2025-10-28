@@ -28,7 +28,7 @@ except Exception as e:
 # -----------------------------
 # Step 2: Connect to your index
 # -----------------------------
-index_host = "quickstart-py-02vwk3u.svc.aped-4627-b74a.pinecone.io"  # Replace with actual host
+index_host = "re-search-02vwk3u.svc.aped-4627-b74a.pinecone.io"  # Replace with actual host
 
 try:
     index = pc.Index(host=index_host)
@@ -47,51 +47,39 @@ except Exception as e:
     print("❌ Failed to list indexes:", e)
 
 # -----------------------------
-# Step 4: Delete existing chunks
+# Step 4: Helper function to generate vectors
 # -----------------------------
-try:
-    deleted = index.delete(
-        namespace="example-namespace",
-        filter={"document_id": {"$eq": "document1"}}
-    )
-    print("✅ Deleted existing chunks for document1:", deleted)
-except Exception as e:
-    print("❌ Failed to delete existing chunks:", e)
+import random
+
+def create_vector(dim=768):
+    """Generate a random 768-dim vector for Pinecone upsert."""
+    return [random.uniform(-1, 1) for _ in range(dim)]
 
 # -----------------------------
-# Step 5: Upsert updated chunks
+# Step 5: Create multiple chunks dynamically
 # -----------------------------
-vectors_to_upsert = [
-    {
-        "id": "document1#first",
-        "values": [0.01, 0.02, 0.03] + [0.0] * 1021,
+num_chunks = 5  # Number of chunks to upsert
+vectors_to_upsert = []
+
+for i in range(num_chunks):
+    vectors_to_upsert.append({
+        "id": f"document1#chunk{i+1}",
+        "values": create_vector(),  # 768-dim random vector
         "metadata": {
-            "document_id": "document44",
+            "document_id": f"document{i+1}",
             "document_title": "Introduction to Vector Databases - Updated Edition",
-            "chunk_number": 1,
-            "chunk_text": "First chunk with new content...",
+            "chunk_number": i+1,
+            "chunk_text": f"Chunk {i+1} with new content...",
             "document_url": "https://example.com/docs/document1",
             "created_at": "2024-02-15",
             "document_type": "tutorial",
             "version": "2.1"
         }
-    },
-    {
-        "id": "document1#second",
-        "values": [0.11, -0.05, 0.07] + [0.0] * 1021,
-        "metadata": {
-            "document_id": "documejhbjbhbhjnt1",
-            "document_title": "Introduction to Vector Databases - Updated Edition",
-            "chunk_number": 2,
-            "chunk_text": "Second chunk with new content...",
-            "document_url": "https://example.com/docs/document1",
-            "created_at": "2024-02-15",
-            "document_type": "tutorial",
-            "version": "2.1"
-        }
-    }
-]
+    })
 
+# -----------------------------
+# Step 6: Upsert chunks
+# -----------------------------
 try:
     response = index.upsert(
         namespace="example-namespace",
@@ -102,7 +90,7 @@ except Exception as e:
     print("❌ Failed to upsert vectors:", e)
 
 # -----------------------------
-# Step 6: Debug - Count vectors in namespace
+# Step 7: Debug - Count vectors in namespace
 # -----------------------------
 try:
     stats = index.describe_index_stats(
@@ -111,6 +99,3 @@ try:
     print("ℹ️ Index stats for namespace 'example-namespace':", stats)
 except Exception as e:
     print("❌ Failed to get index stats:", e)
-# -----------------------------
-# End of Script
-# -----------------------------

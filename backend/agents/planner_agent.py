@@ -14,13 +14,9 @@ client = Groq(api_key=api_key)
 
 class PlannerAgent:
     def plan(self, user_input):
-        """
-        Extracts key concepts and keywords from the user query
-        to improve retrieval precision and minimize hallucinations.
-        """
         prompt = (
-            f"Extract the most relevant keywords and key phrases from the following research query.\n"
-            f"Return only concise search terms (comma-separated) that best represent the topic.\n\n"
+            f"Extract the most relevant keywords from the research query.\n"
+            f"Return **only a comma-separated list** of keywords, nothing else.\n\n"
             f"Query: {user_input}"
         )
 
@@ -31,5 +27,11 @@ class PlannerAgent:
         )
 
         keywords = response.choices[0].message.content.strip()
+
+        # Ensure only keywords are returned
+        if ':' in keywords:
+            keywords = keywords.split(':')[-1].strip()
+
         print(f"🧩 Extracted Keywords: {keywords}")
         return keywords
+

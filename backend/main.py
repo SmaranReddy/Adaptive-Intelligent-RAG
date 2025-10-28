@@ -1,89 +1,141 @@
-from .agents.planner_agent import PlannerAgent
-from .agents.retriever_agent import RetrieverAgent
-from .agents.summarizer_agent import SummarizerAgent
-from .graph_state import GraphState
+# run_workflow.py
+import sys
+import os
+
+# --- Add project root to Python path ---
+current_dir = os.path.dirname(os.path.abspath(__file__))
+root_dir = os.path.abspath(os.path.join(current_dir, ".."))
+if root_dir not in sys.path:
+    sys.path.append(root_dir)
+
+# --- Absolute imports ---
+from backend.agents.planner_agent import PlannerAgent
+from backend.agents.retriever_agent import RetrieverAgent
+from backend.agents.parser_agent import ParserAgent
+from backend.agents.summarizer_agent import SummarizerAgent
+from backend.graph_state import GraphState
 from langgraph.graph import StateGraph, END
+
+# --- Helper debug function ---
+def debug(msg):
+    print(f"[DEBUG] {msg}")
 
 # --- 1. Instantiate Agents ---
 planner = PlannerAgent()
 retriever = RetrieverAgent()
+parser = ParserAgent()
 summarizer = SummarizerAgent()
 
 # --- 2. Define Graph Node Functions ---
-
 def run_planner(state: GraphState):
-    """Node to extract keywords from the user query."""
-    print("--- 🧠 RUNNING PLANNER ---")
-    user_query = state['user_query']
+    print("\n--- 🧠 ENTERING PLANNER NODE ---")
+    user_query = state.get('user_query', "")
+    print(f"Input Query: {user_query}")
+
+    if not user_query:
+        print("WARNING: Empty user query provided.")
+        return {"keywords": []}
+
     keywords = planner.plan(user_query)
+    print(f"Output Keywords: {keywords}")
+    print("--- 🧠 EXITING PLANNER NODE ---\n")
     return {"keywords": keywords}
 
+
 def run_retriever(state: GraphState):
-    """Node to retrieve papers from ArXiv."""
-    print("--- 📚 RUNNING RETRIEVER ---")
-    keywords = state['keywords']
+    print("\n--- 📚 ENTERING RETRIEVER NODE ---")
+    keywords = state.get('keywords', [])
+
+    if not keywords:
+        print("WARNING: No keywords returned from planner.")
+        return {"papers": []}
+
     papers = retriever.search_papers(keywords)
-    
-    print(f"DEBUG: Found {len(papers)} papers.")
+    debug(f"Found {len(papers)} papers.")
+
     if papers:
-        print("--- DEBUG: ALL RETRIEVED PAPERS ---")
+        debug("RETRIEVED PAPERS:")
         for i, paper in enumerate(papers):
-            print(f"  {i+1}: {paper['title']}")
+            title = paper.get('title', 'Untitled')
+            debug(f"  {i+1}: {title}")
         print("-----------------------------------")
     else:
-        print("DEBUG: No papers found")
-        
+        print("WARNING: No papers found.")
+
+    print("--- 📚 EXITING RETRIEVER NODE ---\n")
     return {"papers": papers}
 
+
+def run_parser(state: GraphState):
+    print("\n--- 🗂️ ENTERING PARSER NODE ---")
+    papers = state.get('papers', [])
+
+    if not papers:
+        print("WARNING: No papers to parse.")
+        return {"papers": []}
+
+    papers_with_text = parser.parse_papers(papers)
+    debug(f"Completed parsing {len(papers_with_text)} papers.")
+    print("--- 🗂️ EXITING PARSER NODE ---\n")
+    return {"papers": papers_with_text}
+
+
 def run_summarizer(state: GraphState):
-    """Node to summarize each paper's abstract."""
-    print("--- ✍️ RUNNING SUMMARIZER ---")
-    papers = state['papers']
+    print("\n--- ✍️ ENTERING SUMMARIZER NODE ---")
+    papers = state.get('papers', [])
+
+    if not papers:
+        print("WARNING: No papers to summarize.")
+        return {"summaries": []}
+
     summaries = []
     for i, paper in enumerate(papers):
-        print(f"DEBUG: Summarizing paper {i+1} ('{paper['title']}')")
-        summary = summarizer.summarize(paper['abstract'])
+        content = paper.get("full_text") or paper.get("abstract") or ""
+        title = paper.get("title", "Untitled")
+        debug(f"Summarizing paper {i+1}: '{title}' (content length: {len(content)})")
+        summary = summarizer.summarize(content)
         summaries.append(summary)
-    print("--- Summarization Complete ---")
+        debug(f"Summary generated for paper {i+1}")
+
+    print("--- ✍️ SUMMARIZATION COMPLETE ---\n")
     return {"summaries": summaries}
 
-# --- 3. Build and Compile the Graph (at top level) ---
+# --- 3. Build and Compile the Graph ---
 workflow = StateGraph(GraphState)
 
 workflow.add_node("planner", run_planner)
 workflow.add_node("retriever", run_retriever)
+workflow.add_node("parser", run_parser)
 workflow.add_node("summarizer", run_summarizer)
 
 workflow.set_entry_point("planner")
 workflow.add_edge("planner", "retriever")
-workflow.add_edge("retriever", "summarizer")
+workflow.add_edge("retriever", "parser")
+workflow.add_edge("parser", "summarizer")
 workflow.add_edge("summarizer", END)
 
-# Compile the graph into a runnable app
 app = workflow.compile()
 
-# --- 4. Define an Importable Function for Streamlit ---
+# --- 4. Run function for Streamlit or other frontends ---
 def run_graph(user_query: str) -> dict:
-    """
-    Runs the compiled LangGraph app with a user query
-    and returns the final state.
-    """
+    print("\n=== RUNNING GRAPH WORKFLOW ===")
     inputs = {"user_query": user_query}
-    # .invoke() runs the graph and returns the final state
     final_state = app.invoke(inputs)
+    print("=== GRAPH WORKFLOW COMPLETE ===\n")
     return final_state
 
-# --- 5. Main execution block (for testing) ---
-# This part only runs if you execute main.py directly
+# --- 5. Main execution for direct run ---
 if __name__ == "__main__":
     query = input("Enter your research topic: ")
-    
     final_state = run_graph(query)
-    
+
     print("\n--- ✅ FINAL SUMMARIES ---")
-    if final_state.get('summaries'):
-        for i, summary in enumerate(final_state['summaries']):
-            paper_title = final_state['papers'][i]['title']
+    papers = final_state.get('papers', [])
+    summaries = final_state.get('summaries', [])
+
+    if summaries:
+        for i, summary in enumerate(summaries):
+            paper_title = papers[i].get('title', 'Untitled') if i < len(papers) else 'Untitled'
             print(f"\n--- Summary for: '{paper_title}' ---")
             print(summary)
     else:
