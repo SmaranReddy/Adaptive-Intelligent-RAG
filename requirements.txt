@@ -12,3 +12,4 @@ google-genai
 numpy
 scikit-learn
 fitz
+rich
