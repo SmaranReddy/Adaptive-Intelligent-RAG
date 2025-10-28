@@ -12,7 +12,7 @@ api_key = os.getenv("PINECONE_API_KEY")
 pc = Pinecone(api_key=api_key)
 
 # Define index name
-index_name = "quickstart-py"
+index_name = "oooooooooooooooooo-py"
 
 # Check if the index exists; if not, create it
 if not pc.has_index(index_name):

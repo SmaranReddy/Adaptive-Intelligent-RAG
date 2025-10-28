@@ -66,7 +66,7 @@ vectors_to_upsert = [
         "id": "document1#first",
         "values": [0.01, 0.02, 0.03] + [0.0] * 1021,
         "metadata": {
-            "document_id": "document1",
+            "document_id": "document44",
             "document_title": "Introduction to Vector Databases - Updated Edition",
             "chunk_number": 1,
             "chunk_text": "First chunk with new content...",
@@ -80,7 +80,7 @@ vectors_to_upsert = [
         "id": "document1#second",
         "values": [0.11, -0.05, 0.07] + [0.0] * 1021,
         "metadata": {
-            "document_id": "document1",
+            "document_id": "documejhbjbhbhjnt1",
             "document_title": "Introduction to Vector Databases - Updated Edition",
             "chunk_number": 2,
             "chunk_text": "Second chunk with new content...",
