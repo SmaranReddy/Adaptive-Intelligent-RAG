@@ -16,3 +16,6 @@ rich
 neo4j
 google-generativeai
 tiktoken
+fitz
+beautifulsoup4
+PyPDF2

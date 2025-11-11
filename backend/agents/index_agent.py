@@ -20,32 +20,27 @@ class IndexAgent:
         print("✅ Pinecone index connection established.\n")
 
     def upsert_paper(self, paper, embedding):
-        """Uploads a paper’s embedding and metadata (including full text) to Pinecone."""
-        # Truncate full text to avoid metadata size limits (approx. 40k chars safe)
-        full_text = paper.get("full_text", "")
-        if len(full_text) > 40000:
-            print(f"⚠️ Full text too long ({len(full_text)} chars). Truncating to 40k.")
-            full_text = full_text[:40000]
+        """
+        Upload minimal metadata to avoid Pinecone 40KB limit.
+        """
 
         vector = {
-            "id": paper["title"].replace(" ", "_")[:80],
+            "id": f"{paper['title'].replace(' ', '_')[:80]}_{paper['chunk_id']}",
             "values": embedding,
             "metadata": {
                 "title": paper["title"],
-                "authors": paper.get("authors", []),
-                "abstract": paper.get("abstract", ""),
-                "summary": paper.get("summary_structured", ""),
-                "full_text": full_text,
                 "link": paper.get("link", ""),
-                "published": paper.get("published", ""),
-                "source": "arxiv"
+                "chunk_id": paper.get("chunk_id", 0),
+                "chunk_text": paper.get("chunk_text", "")[:500]  # safe preview
             }
         }
 
-        print(f"📤 Uploading vector for: {paper['title'][:80]}")
+        print(f"📤 Uploading vector for: {paper['title'][:80]} (chunk {paper['chunk_id']})")
+
         response = self.index.upsert(
             namespace="research-papers",
             vectors=[vector]
         )
-        print(f"✅ Upsert completed for '{paper['title'][:80]}'\n")
+
+        print(f"✅ Upsert OK for chunk {paper['chunk_id']}\n")
         return response

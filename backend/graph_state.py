@@ -1,17 +1,25 @@
-# graph_state.py
-from typing import List, Dict, TypedDict
+# backend/graph_state.py
+from typing import List, Dict, Optional, TypedDict
+from typing_extensions import NotRequired
 
-class GraphState(TypedDict):
-    """
-    Represents the state of our graph.
+class Paper(TypedDict, total=False):
+    title: str
+    link: str
+    abstract: str
+    authors: List[str]
+    published: str
+    summary_structured: NotRequired[str]
+    full_text: NotRequired[str]
+    safe_title: NotRequired[str]
+    chunks: NotRequired[List[str]]
+    chunk_embeddings: NotRequired[List[List[float]]]
+    upsert_responses: NotRequired[List[Dict]]
 
-    Attributes:
-        user_query: The initial user query.
-        keywords: Keywords extracted by the planner.
-        papers: A list of paper dictionaries (title, abstract) from ArXiv.
-        summaries: A list of summaries for each paper.
-    """
+class GraphState(TypedDict, total=False):
     user_query: str
-    keywords: str
-    papers: List[Dict[str, str]]
-    summaries: List[str]
+    num_papers: int
+    papers: List[Paper]
+    cleaned_texts: List[str]
+    token_counts: List[int]
+    errors: List[str]
+    final_message: Optional[str]
