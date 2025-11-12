@@ -2,10 +2,8 @@ streamlit
 langchain
 langgraph
 groq
-dotenv
 requests
 grpcio
-pinecone
 feedparser
 google-api-python-client
 google-genai
@@ -19,5 +17,8 @@ tiktoken
 fitz
 beautifulsoup4
 PyPDF2
-
 matplotlib
+tavily
+nltk
+pinecone
+python-dotenv

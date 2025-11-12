@@ -1,46 +1,97 @@
+# ==========================================
 # backend/agents/index_agent.py
-
-from pinecone.grpc import PineconeGRPC as Pinecone
-from dotenv import load_dotenv
+# ==========================================
 import os
+from pinecone import Pinecone, ServerlessSpec
+from dotenv import load_dotenv
 
-load_dotenv()
 
 class IndexAgent:
-    def __init__(self):
+    """
+    Handles inserting (upserting) vector embeddings into a Pinecone index.
+    Supports both single-chunk and multi-chunk (batch) uploads.
+    """
+
+    def __init__(self, index_name="research-papers"):
+        load_dotenv()
         api_key = os.getenv("PINECONE_API_KEY")
         if not api_key:
-            raise ValueError("❌ Missing PINECONE_API_KEY in environment.")
-        
-        print("🔗 Connecting to Pinecone index...")
+            raise ValueError("❌ Missing PINECONE_API_KEY in .env file")
+
+        # ✅ Initialize Pinecone client
         self.pc = Pinecone(api_key=api_key)
-        self.index = self.pc.Index(
-            host="re-search-02vwk3u.svc.aped-4627-b74a.pinecone.io"
-        )
-        print("✅ Pinecone index connection established.\n")
+        self.index_name = index_name
 
-    def upsert_paper(self, paper, embedding):
-        """
-        Upload minimal metadata to avoid Pinecone 40KB limit.
-        """
+        # ✅ Create index if it doesn't exist
+        if self.index_name not in self.pc.list_indexes().names():
+            print(f"⚙️ Creating Pinecone index: {self.index_name} ...")
+            self.pc.create_index(
+                name=self.index_name,
+                dimension=768,  # For Google text-embedding-004
+                metric="cosine",
+                spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            )
+        else:
+            print(f"ℹ️ Pinecone index '{self.index_name}' already exists — using it.")
 
-        vector = {
-            "id": f"{paper['title'].replace(' ', '_')[:80]}_{paper['chunk_id']}",
-            "values": embedding,
-            "metadata": {
-                "title": paper["title"],
-                "link": paper.get("link", ""),
-                "chunk_id": paper.get("chunk_id", 0),
-                "chunk_text": paper.get("chunk_text", "")[:500]  # safe preview
+        # ✅ Connect to the index
+        self.index = self.pc.Index(self.index_name)
+        print(f"✅ Pinecone index '{self.index_name}' connected.\n")
+
+    # ==========================================================
+    # 🧩 Upsert a single chunk (legacy support)
+    # ==========================================================
+    def upsert_paper(self, meta: dict, emb: list[float]):
+        """
+        Upload a single chunk embedding with metadata.
+        """
+        try:
+            self.index.upsert(
+                vectors=[
+                    {
+                        "id": f"{meta['title']}_{meta['chunk_id']}",
+                        "values": emb,
+                        "metadata": meta,
+                    }
+                ]
+            )
+            print(f"✅ Upsert OK for chunk {meta['chunk_id']}")
+            return True
+        except Exception as e:
+            print(f"⚠️ Upsert failed: {e}")
+            return False
+
+    # ==========================================================
+    # ⚡ Batch index multiple chunks for one paper
+    # ==========================================================
+    def index_chunks(self, title: str, chunks: list[str], embeddings: list[list[float]]):
+        """
+        Efficiently upserts all chunks of a single paper into Pinecone.
+        """
+        if not chunks or not embeddings:
+            print(f"⚠️ No chunks/embeddings to index for '{title}'.")
+            return
+
+        vectors = []
+        for i, (chunk, emb) in enumerate(zip(chunks, embeddings), start=1):
+            if not emb:  # Skip failed embeddings
+                continue
+            meta = {
+                "title": title,
+                "chunk_id": i,
+                "text_preview": chunk[:200] + "...",
             }
-        }
+            vectors.append(
+                {
+                    "id": f"{title}_{i}",
+                    "values": emb,
+                    "metadata": meta,
+                }
+            )
 
-        print(f"📤 Uploading vector for: {paper['title'][:80]} (chunk {paper['chunk_id']})")
-
-        response = self.index.upsert(
-            namespace="research-papers",
-            vectors=[vector]
-        )
-
-        print(f"✅ Upsert OK for chunk {paper['chunk_id']}\n")
-        return response
+        try:
+            print(f"📤 Uploading {len(vectors)} chunks for: {title}")
+            self.index.upsert(vectors=vectors, namespace="research-papers")
+            print(f"✅ Indexed {len(vectors)} chunks for: {title}\n")
+        except Exception as e:
+            print(f"⚠️ Batch upsert failed for '{title}': {e}")

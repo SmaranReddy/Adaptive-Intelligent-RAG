@@ -1,17 +1,12 @@
 import requests
-import PyPDF2
+import os, re, json
 from io import BytesIO
-import os
-import re
-import json
 from time import sleep
+from PyPDF2 import PdfReader
 
 BROWSER_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/122.0.0.0 Safari/537.36"
-    ),
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36",
     "Accept": "application/pdf,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
     "Referer": "https://www.google.com/",
@@ -25,7 +20,7 @@ class DownloaderAgent:
         self.session.headers.update(BROWSER_HEADERS)
         self.save_dir = save_dir
 
-    def _sanitize_filename(self, title: str) -> str:
+    def _sanitize_filename(self, title):
         safe = re.sub(r'[\\/*?:"<>|]', "", title or "untitled")
         return " ".join(safe.split())
 
@@ -37,7 +32,6 @@ class DownloaderAgent:
         json_path = os.path.join(self.save_dir, safe_title + ".json")
 
         if not url:
-            print("⚠️ No URL detected")
             item["full_text"] = ""
             return item
 
@@ -54,72 +48,64 @@ class DownloaderAgent:
             print(f"📄 Saved PDF: {pdf_path}")
 
             # Extract text
-            full_text = self._extract_text(pdf_bytes)
-            item["full_text"] = full_text
+            text = self._extract_text(pdf_bytes)
+            item["full_text"] = text
 
-            # Save metadata
+            # Save metadata JSON
             with open(json_path, "w", encoding="utf-8") as f:
                 json.dump({
-                    "title": item.get("title"),
+                    "title": title,
                     "url": url,
-                    "chars": len(full_text),
-                    "preview": full_text[:1500],
-                }, f, ensure_ascii=False, indent=2)
+                    "chars": len(text),
+                    "preview": text[:1000]
+                }, f, indent=2, ensure_ascii=False)
             print(f"💾 Saved JSON: {json_path}")
 
         except Exception as e:
-            print(f"❌ PDF extraction failed: {e}")
+            print(f"⚠️ Download or extraction failed: {e}")
             item["full_text"] = ""
-
         return item
 
-    # ------------------------------------------
-    # ✅ Strong PDF downloader with retries
-    # ------------------------------------------
     def _attempt_pdf_download(self, url):
         try_urls = [url]
 
-        # DigitalCommons / ResearchGate trick
-        if "viewcontent" in url:
-            # They expect direct access
-            try_urls.append(url.replace("viewcontent.cgi", "download"))
+        # ✅ Springer fix
+        if "springer.com/article/" in url:
+            doi = url.split("/article/")[-1]
+            try_urls.append(f"https://link.springer.com/content/pdf/{doi}.pdf")
 
+        # ✅ IEEE fix
+        if "ieeexplore.ieee.org/document/" in url:
+            doc_id = re.findall(r"/document/(\d+)", url)
+            if doc_id:
+                try_urls.append(f"https://ieeexplore.ieee.org/stampPDF/getPDF.jsp?tp=&arnumber={doc_id[0]}")
+
+        # ✅ ACM fix
+        if "dl.acm.org/doi/" in url:
+            try_urls.append(url.replace("/doi/", "/doi/pdf/"))
+
+        # ✅ arXiv fix
+        if "arxiv.org/abs/" in url:
+            try_urls.append(url.replace("abs", "pdf") + ".pdf")
+
+        # Attempt download with retries
         for attempt in range(3):
             for u in try_urls:
                 try:
-                    resp = self.session.get(u, timeout=20, allow_redirects=True)
-                    if resp.status_code == 403:
-                        print(f"⚠️ 403 Forbidden, retrying with referer spoof...")
-                        self.session.headers["Referer"] = u
-                        sleep(1)
-                        continue
-
-                    # Check PDF content type
-                    if "application/pdf" in resp.headers.get("Content-Type", "").lower():
-                        return resp.content
-
-                    # Some servers don't send correct content-type, but PDF bytes still readable
-                    if resp.content[:4] == b"%PDF":
-                        return resp.content
-
+                    r = self.session.get(u, timeout=25, allow_redirects=True)
+                    if "application/pdf" in r.headers.get("Content-Type", "") or r.content.startswith(b"%PDF"):
+                        return r.content
                 except Exception as e:
                     print(f"⚠️ Retry failed ({e})")
-
-            sleep(1)  # small delay between attempts
-
+            sleep(1)
         return None
 
-    # ------------------------------------------
-    # ✅ PDF text extractor (safe)
-    # ------------------------------------------
     def _extract_text(self, pdf_bytes):
+        text = ""
         try:
-            reader = PyPDF2.PdfReader(BytesIO(pdf_bytes))
-            text = []
+            reader = PdfReader(BytesIO(pdf_bytes))
             for page in reader.pages:
-                t = page.extract_text() or ""
-                text.append(t)
-            return "\n".join(text).strip()
+                text += page.extract_text() or ""
         except Exception as e:
-            print(f"⚠️ PDF parsing error: {e}")
-            return ""
+            print(f"⚠️ PDF parse error: {e}")
+        return text.strip()
