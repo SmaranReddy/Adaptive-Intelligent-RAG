@@ -7,8 +7,6 @@ import sys
 # Step 0: Load environment variables
 # -----------------------------
 load_dotenv()
-
-# Get Pinecone API key from .env file
 api_key = os.getenv("PINECONE_API_KEY")
 
 if not api_key:
@@ -28,7 +26,7 @@ except Exception as e:
 # -----------------------------
 # Step 2: Connect to your index
 # -----------------------------
-index_host = "quickstart-py-02vwk3u.svc.aped-4627-b74a.pinecone.io"  # Replace with your index host
+index_host = "re-search-02vwk3u.svc.aped-4627-b74a.pinecone.io"  # replace with your host
 
 try:
     index = pc.Index(host=index_host)
@@ -38,26 +36,21 @@ except Exception as e:
     sys.exit(1)
 
 # -----------------------------
-# Step 3: Fetch specific vectors from namespace
+# Step 3: Count all records in namespace
 # -----------------------------
-vector_ids = ["document1#first", "document1#second"]  # Add more IDs as needed
+namespace = "research-papers"  # change this if needed
 
 try:
-    all_vectors = index.fetch(ids=vector_ids, namespace="example-namespace")
-    print(f"✅ Successfully fetched {len(all_vectors.vectors)} vectors\n")
-except Exception as e:
-    print("❌ Failed to fetch vectors:", e)
-    sys.exit(1)
+    print(f"🔍 Listing all vector IDs from namespace '{namespace}'...")
+    id_list = index.list(namespace=namespace)
 
-# -----------------------------
-# Step 4: Print each vector and metadata
-# -----------------------------
-if not all_vectors.vectors:
-    print("⚠️ No vectors found for the given IDs.")
-else:
-    for vid, vec in all_vectors.vectors.items():
-        print("🆔 ID:", vid)
-        print("📏 Vector Dimension:", len(vec.values))
-        print("🔢 First 10 Vector Values:", vec.values[:10], "...")
-        print("🧾 Metadata:", vec.metadata)
-        print("=" * 60)
+    # Normalize generator/list
+    if not isinstance(id_list, list):
+        id_list = list(id_list)
+
+    total_count = len(id_list)
+    print(f"📊 Total vectors in namespace '{namespace}': {total_count}")
+
+except Exception as e:
+    print("❌ Failed to count vectors:", e)
+    sys.exit(1)
