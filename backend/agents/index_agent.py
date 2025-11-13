@@ -6,7 +6,7 @@ from pinecone import Pinecone, ServerlessSpec
 from dotenv import load_dotenv
 
 class IndexAgent:
-    def __init__(self, index_name="research-papers"):
+    def __init__(self, index_name="re-search"):
         load_dotenv()
         api_key = os.getenv("PINECONE_API_KEY")
         if not api_key:
@@ -20,7 +20,7 @@ class IndexAgent:
             print(f"⚙️ Creating Pinecone index: {self.index_name} ...")
             self.pc.create_index(
                 name=self.index_name,
-                dimension=3072,  # ❗ FIXED
+                dimension=768,  # ❗ FIXED
                 metric="cosine",
                 spec=ServerlessSpec(cloud="aws", region="us-east-1"),
             )

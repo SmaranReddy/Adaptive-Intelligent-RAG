@@ -82,7 +82,7 @@ for i in range(num_chunks):
 # -----------------------------
 try:
     response = index.upsert(
-        namespace="research-papers",
+        namespace="re-search",
         vectors=vectors_to_upsert
     )
     print("✅ Successfully upserted document1 chunks:", response)

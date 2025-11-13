@@ -1,6 +1,0 @@
-{
-  "title": "Attention is all you need for boosting graph convolutional ...",
-  "url": "https://arxiv.org/pdf/2403.15419.pdf",
-  "chars": 59997,
-  "preview": "Attention is all you need for boosting graph convolutional\nneural network\nYinwei Wu∗a\naCollege of Software Engineering, Sichuan University, Chengdu, China\nMarch 26, 2024\nAbstract\nGraph Convolutional Neural Networks (GCNs) possess strong capabilities for processing graph\ndata in non-grid domains. They can capture the topological logical structure and node features in\ngraphs and integrate them into nodes’ final representations. GCNs have been extensively studied in\nvarious fields, such as recommendation systems, social networks, and protein molecular structures.\nWith the increasing application of graph neural networks, research has focused on improving\ntheir performance while compressing their size. In this work, a plug-in module named Graph\nKnowledge Enhancement and Distillation Module (GKEDM) is proposed. GKEDM can enhance\nnode representations and improve the performance of GCNs by extracting and aggregating graph\ninformation via multi-head attention mechanism. Furthermore, GKEDM can s"
-}

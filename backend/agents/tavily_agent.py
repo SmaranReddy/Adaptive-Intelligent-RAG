@@ -21,7 +21,7 @@ class TavilyAgent:
         if not self.api_key:
             raise ValueError("❌ Missing TAVILY_API_KEY in environment variables.")
         self.base_url = "https://api.tavily.com/search"
-        print("✅ Tavily client initialized successfully")
+        print("[OK] Tavily client initialized successfully")
 
     # ====================================================
     # 🔍 Search academic papers (max 5)

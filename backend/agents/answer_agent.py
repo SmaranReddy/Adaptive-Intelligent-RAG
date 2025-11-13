@@ -1,5 +1,5 @@
 # ==========================================
-# backend/agents/answer_agent.py
+# backend/agents/answer_agent.py (RAG-enabled)
 # ==========================================
 import os
 from groq import Groq
@@ -7,10 +7,8 @@ from dotenv import load_dotenv
 
 class AnswerAgent:
     """
-    Uses Groq's LLM to synthesize a coherent answer
-    from the retrieved text context.
+    Synthesizes a final answer using Groq LLM with full RAG context.
     """
-
     def __init__(self):
         load_dotenv()
         api_key = os.getenv("GROQ_API_KEY")
@@ -18,40 +16,52 @@ class AnswerAgent:
             raise ValueError("❌ Missing GROQ_API_KEY in .env file")
 
         self.client = Groq(api_key=api_key)
-        print("✅ AnswerAgent ready (Groq LLM).")
+        self.model = "llama-3.1-8b-instant"   # 🔥 best Groq model
+        print("✅ AnswerAgent ready (Groq RAG engine).")
 
-    def generate_answer(self, query: str, context: list[str]) -> str:
+    def generate_answer(self, query: str, retrieved_matches: list) -> str:
         """
-        Combine retrieved chunks into a final answer using Groq.
+        retrieved_matches: output from RetrieverAgent.retrieve()
         """
-        context_text = "\n\n".join(context)
-        if len(context_text) > 15000:  # keep prompt size manageable
-            context_text = context_text[:15000]
+
+        if not retrieved_matches:
+            return "⚠️ No relevant information retrieved."
+
+        # Build context in the exact format as standalone RAG test
+        context_blocks = []
+        for m in retrieved_matches:
+            title = m["metadata"].get("title", "Unknown Title")
+            text = m["text"]
+            context_blocks.append(f"### {title}\n{text}")
+
+        context = "\n\n".join(context_blocks)
 
         prompt = f"""
-        You are an expert AI research summarizer.
-        The following are extracted research paper snippets about: "{query}".
+You are a research assistant. Your job is to answer the user's question using ONLY the context provided.
 
-        Context:
-        {context_text}
+User Query:
+{query}
 
-        Based on the above, write a concise, factual, and well-structured explanation.
-        - Do NOT hallucinate or fabricate details.
-        - Include paper insights if found.
-        - Write clearly in academic tone.
-        """
+Context:
+{context}
+
+Guidelines:
+- Use only facts available in the retrieved chunks.
+- No hallucination.
+- If information is missing, say so.
+- Provide a clear, structured, research-grade answer.
+"""
 
         try:
             response = self.client.chat.completions.create(
-                model="llama-3.1-8b-instant",   # ✅ UPDATED MODEL
-                messages=[
-                    {"role": "system", "content": "You are a helpful academic AI assistant."},
-                    {"role": "user", "content": prompt},
-                ],
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,
-                max_tokens=1000,
+                max_tokens=900,
             )
+
             return response.choices[0].message.content.strip()
+
         except Exception as e:
             print(f"⚠️ Groq request failed: {e}")
             return "⚠️ Could not generate answer due to LLM error."

@@ -1,135 +1,91 @@
 import streamlit as st
-import os
+import subprocess
+import threading
+import queue
 import sys
-import io
-import json
-from contextlib import redirect_stdout
+import os
 
-# ---------------------------------------------------------------------
-# 🧩 Fix Import Path (important)
-# ---------------------------------------------------------------------
-# Add the project root (parent of frontend/) to Python path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+# ==========================================
+# Streamlit App UI
+# ==========================================
 
-# Now you can import from backend/
-from backend.pipeline import main as run_pipeline
+st.set_page_config(page_title="AI Research Assistant", layout="wide")
+st.title("📚 AI Research Assistant – Research Pipeline UI")
+
+st.markdown("This UI runs your backend pipeline (`backend/pipeline.py`) "
+            "and streams the cinematic logs live into Streamlit.")
+
+# ------------------------------------------
+# User Inputs
+# ------------------------------------------
+
+query = st.text_input("🔍 Enter your research query:")
+num_papers = st.number_input("📄 Number of papers to index", min_value=1, max_value=50, value=5)
+
+run_btn = st.button("🚀 Run Pipeline")
+
+# This is where logs will appear
+log_box = st.empty()
 
 
-# ---------------------------------------------------------------------
-# 🎨 Streamlit Page Configuration
-# ---------------------------------------------------------------------
-st.set_page_config(
-    page_title="Tavily Research Assistant",
-    page_icon="🧠",
-    layout="wide",
-)
+# ==========================================
+# Helper: Stream backend output LIVE
+# ==========================================
 
-# ---------------------------------------------------------------------
-# 🧠 Header Section
-# ---------------------------------------------------------------------
-st.title("🧠 Tavily Research Assistant")
-st.markdown("""
-Welcome to your **AI-Powered Research Pipeline**!  
-This app automates your research process by:
-1. Searching for papers via Tavily  
-2. Downloading and extracting text  
-3. Cleaning, tokenizing, and chunking content  
-4. Summarizing key sections  
-5. Embedding and indexing results for retrieval
+def stream_subprocess(process, q):
+    """Reads stdout line-by-line and pushes into a queue."""
+    for line in iter(process.stdout.readline, ''):
+        q.put(line)
+    process.stdout.close()
+    q.put(None)  # signal process complete
 
----
-""")
 
-# ---------------------------------------------------------------------
-# 🔍 User Input
-# ---------------------------------------------------------------------
-query = st.text_input(
-    "Enter your research query:",
-    placeholder="e.g. Graph neural networks in molecular biology"
-)
+# ==========================================
+# Run pipeline
+# ==========================================
 
-# ---------------------------------------------------------------------
-# 🚀 Run Button
-# ---------------------------------------------------------------------
-if st.button("🚀 Run Research Pipeline", use_container_width=True):
+if run_btn:
     if not query.strip():
-        st.warning("Please enter a query first.")
+        st.error("Please enter a valid research query.")
         st.stop()
 
-    # Display spinner and capture output
-    with st.spinner("Running Tavily Research Pipeline... Please wait ⏳"):
-        buffer = io.StringIO()
-        with redirect_stdout(buffer):
-            try:
-                run_pipeline(query)
-            except Exception as e:
-                st.error(f"Pipeline execution failed: {e}")
+    BACKEND_FILE = os.path.join("backend", "pipeline.py")
 
-    # -----------------------------------------------------------------
-    # 🧾 Show Logs
-    # -----------------------------------------------------------------
-    st.subheader("🧾 Pipeline Execution Logs")
-    st.text_area("Execution Log", buffer.getvalue(), height=350)
+    if not os.path.exists(BACKEND_FILE):
+        st.error("❌ backend/pipeline.py not found! Check your folder structure.")
+        st.stop()
 
-    # -----------------------------------------------------------------
-    # 📂 Load Output JSON (if exists)
-    # -----------------------------------------------------------------
-    safe_name = query.replace(" ", "_").replace("/", "_")
-    json_path = os.path.join("downloads", f"{safe_name}.json")
+    st.success("⚙️ Starting pipeline… logs will stream below.")
 
-    if os.path.exists(json_path):
-        with open(json_path, "r", encoding="utf-8") as f:
-            paper_data = json.load(f)
+    # Launch backend subprocess
+    process = subprocess.Popen(
+        [sys.executable, BACKEND_FILE],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1
+    )
 
-        st.success("✅ Research pipeline completed successfully!")
+    # Send inputs to backend’s input() calls
+    process.stdin.write(query + "\n")
+    process.stdin.write(str(num_papers) + "\n")
+    process.stdin.flush()
 
-        # -------------------------------------------------------------
-        # 📘 Paper Details
-        # -------------------------------------------------------------
-        st.subheader("📘 Paper Details")
-        st.write(f"**Title:** {paper_data.get('title', 'N/A')}")
-        st.write(f"**Link:** [{paper_data.get('link', 'N/A')}]({paper_data.get('link', '#')})")
+    # Queue & thread for live output
+    q = queue.Queue()
+    t = threading.Thread(target=stream_subprocess, args=(process, q))
+    t.start()
 
-        # -------------------------------------------------------------
-        # 📝 Summary
-        # -------------------------------------------------------------
-        if "summary_structured" in paper_data:
-            st.subheader("📝 Summary")
-            st.write(paper_data["summary_structured"])
+    logs = ""
 
-        # -------------------------------------------------------------
-        # 📄 Extracted Full Text
-        # -------------------------------------------------------------
-        with st.expander("📄 View Extracted Full Text"):
-            st.text_area(
-                "Full Text",
-                paper_data.get("full_text", "No extracted text available."),
-                height=300
-            )
+    # Stream logs live into Streamlit
+    while True:
+        line = q.get()
+        if line is None:
+            break
+        logs += line
+        log_box.text(logs)
 
-        # -------------------------------------------------------------
-        # 💾 Download Button
-        # -------------------------------------------------------------
-        st.download_button(
-            label="💾 Download Paper JSON",
-            data=json.dumps(paper_data, ensure_ascii=False, indent=2),
-            file_name=f"{safe_name}.json",
-            mime="application/json",
-        )
-    else:
-        st.warning("⚠️ No paper JSON found. The pipeline may have stopped early.")
-
-# ---------------------------------------------------------------------
-# 📚 Sidebar
-# ---------------------------------------------------------------------
-st.sidebar.header("ℹ️ About")
-st.sidebar.markdown("""
-**Tavily AI Research Assistant**  
-Built with:
-- 🧠 Python + Streamlit  
-- 🔍 Tavily API  
-- 🧩 Pinecone + LangChain-style multi-agent pipeline  
-
-Use this app to automate literature search, summarization, and indexing.  
-Ideal for students, researchers, and AI developers.
-""")
+    process.wait()
+    st.success("🎉 Pipeline finished!")

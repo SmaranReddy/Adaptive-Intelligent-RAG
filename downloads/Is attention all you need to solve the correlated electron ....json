@@ -1,6 +1,0 @@
-{
-  "title": "Is attention all you need to solve the correlated electron ...",
-  "url": "https://arxiv.org/pdf/2502.05383.pdf",
-  "chars": 78317,
-  "preview": "Is attention all you need to solve the correlated electron problem?\nMax Geier,∗Khachatur Nazaryan,∗Timothy Zaklama, and Liang Fu\nDepartment of Physics, Massachusetts Institute of Technology, Cambridge, MA 02139, USA\n(Dated: July 11, 2025)\nThe attention mechanism has transformed artificial intelligence research by its ability to learn\nrelations between objects. In this work, we explore how a many-body wavefunction ansatz con-\nstructed from a large-parameter self-attention neural network can be used to solve the interacting\nelectron problem in solids. By a systematic neural-network variational Monte Carlo study on a\nmoir´ e quantum material, we demonstrate that the self-attention ansatz provides an accurate and ef-\nficient solution without human bias. Moreover, our numerical study finds that the required number\nof variational parameters scales roughly as N2with the number of electrons, which opens a path\ntowards efficient large-scale simulations.\nI. INTRODUCTION\nSolving the many-electron"
-}

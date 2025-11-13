@@ -1,4 +1,6 @@
-import os, re, json
+import os
+import re
+import json
 from graph_state import GraphState
 from agents.tavily_agent import TavilyAgent
 from agents.downloader_agent import DownloaderAgent
@@ -11,18 +13,18 @@ downloader = DownloaderAgent()
 embedder = EmbedderAgent()
 indexer = IndexAgent()
 
-# 1️⃣ Search web for relevant papers
+# 1. Search web for relevant papers
 def node_search_web(state: GraphState) -> GraphState:
     query = state["user_query"]
-    print(f"🔍 Searching Tavily for: {query}")
+    print(f"[SEARCH] Executing Tavily search for: {query}")
     papers = tavily.search(query)
     return {"papers": papers}
 
-# 2️⃣ Summarize (optional — can be kept simple)
+# 2. Optional summarization step
 def node_summarize_abstracts(state: GraphState) -> GraphState:
     return state
 
-# 3️⃣ Download and extract PDFs
+# 3. Download and extract PDFs
 def node_download_and_extract(state: GraphState) -> GraphState:
     papers = state["papers"]
     enriched = []
@@ -30,38 +32,49 @@ def node_download_and_extract(state: GraphState) -> GraphState:
         enriched.append(downloader.download_and_extract(item))
     return {"papers": enriched}
 
-# 4️⃣ Preprocess text
+# 4. Text preprocessing
 def node_preprocess(state: GraphState) -> GraphState:
     for p in state["papers"]:
         p["clean_text"] = preprocess_text(p.get("full_text", ""))
     return state
 
-# 5️⃣ Tokenize (optional)
+# 5. Optional tokenization step
 def node_tokenize(state: GraphState) -> GraphState:
     return state
 
-# 6️⃣ Chunk text
+# 6. Chunk text
 def node_chunk(state: GraphState) -> GraphState:
     for p in state["papers"]:
-        p["chunks"] = chunk_text(p.get("clean_text", ""), chunk_size=1000, overlap=150)
+        p["chunks"] = chunk_text(
+            p.get("clean_text", ""),
+            chunk_size=1000,
+            overlap=150
+        )
     return state
 
-# 7️⃣ Embed chunks
+# 7. Embed chunks
 def node_embed(state: GraphState) -> GraphState:
     for p in state["papers"]:
         p["embeddings"] = embedder.embed_chunks(p["chunks"])
     return state
 
-# 8️⃣ Index into Pinecone
+# 8. Index chunks into Pinecone
 def node_index(state: GraphState) -> GraphState:
     for p in state["papers"]:
-        indexer.index_chunks(p["title"], p["chunks"], p["embeddings"])
+        indexer.index_chunks(
+            p["title"],
+            p["chunks"],
+            p["embeddings"]
+        )
     return state
 
-# 9️⃣ Final summary node (Fixes final_message KeyError)
+# 9. Final summary node
 def node_finalize(state: GraphState) -> GraphState:
     papers = state.get("papers", [])
-    msg = f"✅ Indexed {len(papers)} papers.\n"
+    message = f"Indexed {len(papers)} papers.\n"
     for p in papers:
-        msg += f"- {p.get('title', 'Untitled')} → {len(p.get('chunks', []))} chunks\n"
-    return {"final_message": msg}
+        message += (
+            f"- {p.get('title', 'Untitled')} "
+            f"processed into {len(p.get('chunks', []))} chunks\n"
+        )
+    return {"final_message": message}
