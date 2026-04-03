@@ -6,6 +6,9 @@
 
 ## 🧠 Key Innovations
 
+**Dynamic document acquisition**
+Automatically searches, downloads, and indexes research papers when retrieval quality is insufficient — turning a failed retrieval pass into a self-healing ingestion cycle without manual intervention.
+
 **Relevance-aware ingestion trigger**
 Ingestion is not triggered by counting documents. It fires when LLM-rated retrieval quality falls below a threshold — measured using median rerank score and the proportion of low-quality documents. A count-based trigger misses the harder case: many retrieved documents that are entirely off-topic.
 
