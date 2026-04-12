@@ -32,7 +32,7 @@ _W_LLM:       float = 0.40
 
 # Score thresholds for status determination
 LOW_CONFIDENCE_THRESHOLD: float = 0.40    # below → "low_confidence" status
-ANSWER_CONFIDENCE_THRESHOLD: float = 0.50  # must match AnswerAgent.CONFIDENCE_THRESHOLD
+ANSWER_CONFIDENCE_THRESHOLD: float = 0.35  # must match AnswerAgent.CONFIDENCE_THRESHOLD
 
 
 def _adaptive_weights(

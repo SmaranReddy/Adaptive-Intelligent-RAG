@@ -10,32 +10,32 @@ class Indexer:
         load_dotenv()
         api_key = os.getenv("PINECONE_API_KEY")
         if not api_key:
-            raise ValueError("❌ Missing PINECONE_API_KEY in .env file")
+            raise ValueError("[ERROR] Missing PINECONE_API_KEY in .env file")
 
         self.pc = Pinecone(api_key=api_key)
         self.index_name = index_name
 
         # ❗ FIX: correct embedding dimension for Google text-embedding-004
         if self.index_name not in self.pc.list_indexes().names():
-            print(f"⚙️ Creating Pinecone index: {self.index_name} ...")
+            print(f"[SETUP] Creating Pinecone index: {self.index_name} ...")
             self.pc.create_index(
                 name=self.index_name,
-                dimension=768,  # ❗ FIXED
+                dimension=384,  # all-MiniLM-L6-v2 produces 384-dim vectors
                 metric="cosine",
                 spec=ServerlessSpec(cloud="aws", region="us-east-1"),
             )
         else:
-            print(f"ℹ️ Pinecone index '{self.index_name}' already exists — using it.")
+            print(f"[INFO] Pinecone index '{self.index_name}' already exists — using it.")
 
         self.index = self.pc.Index(self.index_name)
-        print(f"✅ Pinecone index '{self.index_name}' connected.\n")
+        print(f"[OK] Pinecone index '{self.index_name}' connected.\n")
 
     # ------------------------------------------
     # BATCH INDEX — FIXED
     # ------------------------------------------
     def index_chunks(self, title: str, chunks: list[str], embeddings: list[list[float]], url: str = ""):
         if not chunks or not embeddings:
-            print(f"⚠️ No chunks/embeddings to index for '{title}'.")
+            print(f"[WARN] No chunks/embeddings to index for '{title}'.")
             return
 
         vectors = []
@@ -53,8 +53,8 @@ class Indexer:
             })
 
         try:
-            print(f"📤 Uploading {len(vectors)} chunks for: {title}")
+            print(f"[UPLOAD] Uploading {len(vectors)} chunks for: {title}")
             self.index.upsert(vectors=vectors, namespace="default")
-            print(f"✅ Indexed {len(vectors)} chunks for: {title}\n")
+            print(f"[OK] Indexed {len(vectors)} chunks for: {title}\n")
         except Exception as e:
-            print(f"⚠️ Batch upsert failed for '{title}': {e}")
+            print(f"[WARN] Batch upsert failed for '{title}': {e}")

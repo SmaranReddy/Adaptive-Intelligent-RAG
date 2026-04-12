@@ -38,14 +38,14 @@ class Downloader:
         try:
             pdf_bytes = self._attempt_pdf_download(url)
             if not pdf_bytes:
-                print(f"❌ Could not download PDF: {url}")
+                print(f"[FAIL] Could not download PDF: {url}")
                 item["full_text"] = ""
                 return item
 
             # Save PDF
             with open(pdf_path, "wb") as f:
                 f.write(pdf_bytes)
-            print(f"📄 Saved PDF: {pdf_path}")
+            print(f"[PDF] Saved PDF: {pdf_path}")
 
             # Extract text
             text = self._extract_text(pdf_bytes)
@@ -59,45 +59,43 @@ class Downloader:
                     "chars": len(text),
                     "preview": text[:1000]
                 }, f, indent=2, ensure_ascii=False)
-            print(f"💾 Saved JSON: {json_path}")
+            print(f"[JSON] Saved JSON: {json_path}")
 
         except Exception as e:
-            print(f"⚠️ Download or extraction failed: {e}")
+            print(f"[WARN] Download or extraction failed: {e}")
             item["full_text"] = ""
         return item
 
     def _attempt_pdf_download(self, url):
         try_urls = [url]
 
-        # ✅ Springer fix
+        # [OK] Springer fix
         if "springer.com/article/" in url:
             doi = url.split("/article/")[-1]
             try_urls.append(f"https://link.springer.com/content/pdf/{doi}.pdf")
 
-        # ✅ IEEE fix
+        # [OK] IEEE fix
         if "ieeexplore.ieee.org/document/" in url:
             doc_id = re.findall(r"/document/(\d+)", url)
             if doc_id:
                 try_urls.append(f"https://ieeexplore.ieee.org/stampPDF/getPDF.jsp?tp=&arnumber={doc_id[0]}")
 
-        # ✅ ACM fix
+        # [OK] ACM fix
         if "dl.acm.org/doi/" in url:
             try_urls.append(url.replace("/doi/", "/doi/pdf/"))
 
-        # ✅ arXiv fix
+        # [OK] arXiv fix
         if "arxiv.org/abs/" in url:
             try_urls.append(url.replace("abs", "pdf") + ".pdf")
 
-        # Attempt download with retries
-        for attempt in range(3):
-            for u in try_urls:
-                try:
-                    r = self.session.get(u, timeout=25, allow_redirects=True)
-                    if "application/pdf" in r.headers.get("Content-Type", "") or r.content.startswith(b"%PDF"):
-                        return r.content
-                except Exception as e:
-                    print(f"⚠️ Retry failed ({e})")
-            sleep(1)
+        # Single pass — no retries to keep ingestion fast
+        for u in try_urls:
+            try:
+                r = self.session.get(u, timeout=12, allow_redirects=True)
+                if "application/pdf" in r.headers.get("Content-Type", "") or r.content.startswith(b"%PDF"):
+                    return r.content
+            except Exception as e:
+                print(f"[WARN] Download failed ({e})")
         return None
 
     def _extract_text(self, pdf_bytes):
@@ -107,5 +105,5 @@ class Downloader:
             for page in reader.pages:
                 text += page.extract_text() or ""
         except Exception as e:
-            print(f"⚠️ PDF parse error: {e}")
+            print(f"[WARN] PDF parse error: {e}")
         return text.strip()

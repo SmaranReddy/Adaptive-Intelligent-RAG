@@ -82,7 +82,7 @@ export default function ChatPage() {
 
     const start = Date.now();
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 150_000);
+    const timeoutId = setTimeout(() => controller.abort(), 300_000);
 
     try {
       const res = await fetch("/api/stream", {
@@ -172,7 +172,7 @@ export default function ChatPage() {
       clearTimeout(timeoutId);
       const isTimeout = err instanceof DOMException && err.name === "AbortError";
       const content = isTimeout
-        ? "Request timed out after 150s — the backend may be overloaded."
+        ? "Request timed out after 300s — the backend may be overloaded."
         : err instanceof Error
         ? err.message
         : "Network error — is the backend running?";

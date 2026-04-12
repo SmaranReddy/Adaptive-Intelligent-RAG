@@ -25,7 +25,7 @@ export async function POST(req: NextRequest) {
       }),
       // @ts-expect-error — Node 18 fetch supports duplex
       duplex: "half",
-      signal: AbortSignal.timeout(180_000),
+      signal: AbortSignal.timeout(360_000),
     });
 
     if (!upstream.ok || !upstream.body) {

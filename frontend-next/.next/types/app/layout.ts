@@ -1,4 +1,4 @@
-// File: C:\Users\Asus\OneDrive\Desktop\improving ReSearch\re-search\frontend-next\app\layout.tsx
+// File: C:\Users\Asus\OneDrive\Desktop\Adaptive Intelligent RAG\ResearchOS-Autonomous-AI-Research-System\frontend-next\app\layout.tsx
 import * as entry from '../../../app/layout.js'
 import type { ResolvingMetadata, ResolvingViewport } from 'next/dist/lib/metadata/types/metadata-interface.js'
 

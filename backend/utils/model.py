@@ -10,5 +10,5 @@ def get_embedding_model() -> SentenceTransformer:
     global _model
     if _model is None:
         _model = SentenceTransformer(EMBED_MODEL)
-        print(f"✅ Embedding model ({EMBED_MODEL}, dim={EMBED_DIM}) loaded.")
+        print(f"[OK] Embedding model ({EMBED_MODEL}, dim={EMBED_DIM}) loaded.")
     return _model

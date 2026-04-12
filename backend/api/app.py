@@ -2,6 +2,8 @@ import sys
 import os
 import json
 import asyncio
+import time
+import traceback
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -20,15 +22,30 @@ from core.confidence import compute_composite, derive_status, LOW_CONFIDENCE_THR
 from core.rate_limiter import rate_limit
 from core.logger import log_request
 from agents.answer_agent import AnswerAgent
+from retrieval.retriever import get_retriever
 
 app = FastAPI(title="re-search API")
 
-_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+
+@app.on_event("startup")
+async def _warmup_pinecone():
+    """
+    Fire a cheap Pinecone query on server startup so the first real user
+    request does not pay the cold-start penalty (~3-8s on free-tier serverless).
+    Also pre-loads the SentenceTransformer model into memory.
+    """
+    try:
+        retriever = get_retriever()          # creates singleton + loads embedding model
+        await asyncio.to_thread(retriever.retrieve, "warmup", top_k=1)
+        print("[WARMUP] Pinecone + embedding model ready")
+    except Exception as exc:
+        print(f"[WARMUP] non-fatal warm-up error: {exc}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_origins,
-    allow_methods=["POST"],
-    allow_headers=["Content-Type"],
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -59,6 +76,7 @@ class LatencyInfo(BaseModel):
     retrieve_ms: int = 0
     rerank_ms:   int = 0
     llm_ms:      int = 0
+    total_ms:    int = 0
 
 
 class DecisionTrace(BaseModel):
@@ -100,6 +118,7 @@ def _build_response(
             retrieve_ms=latency_ms.get("retrieve_ms", 0),
             rerank_ms=latency_ms.get("rerank_ms", 0),
             llm_ms=latency_ms.get("llm_ms", 0),
+            total_ms=latency_ms.get("total_ms", 0),
         ),
         decision_trace=DecisionTrace(**(decision_trace or {})),
     )
@@ -111,6 +130,7 @@ def _build_response(
 
 @app.post("/query", response_model=QueryResponse, dependencies=[Depends(rate_limit)])
 def query(request: QueryRequest):
+    print(f"[REQUEST_RECEIVED] query='{request.query[:80]}'")
     cache = get_cache()
     history = request.history or []
 
@@ -125,16 +145,19 @@ def query(request: QueryRequest):
             sources_count=len(cached.sources),
             cached=True,
         )
+        print(f"[RESPONSE_SENT] (cached) status={cached.status}")
         return cached
 
     # --- Pipeline ---
     try:
+        print(f"[RETRIEVE_START] query='{request.query[:80]}'")
         answer, confidence, updated_history, sources, latency_ms, status, decision_trace = run_pipeline(
             request.query,
             chat_history=history,
         )
     except Exception as e:
-        print(f"⚠️ Pipeline error: {e}")
+        print(f"[ERROR] Pipeline exception: {e}")
+        traceback.print_exc()
         log_request(
             query=request.query,
             status="error",
@@ -166,6 +189,7 @@ def query(request: QueryRequest):
     if status == "success":
         cache.set(request.query, history, response)
 
+    print(f"[RESPONSE_SENT] status={status} confidence={confidence:.3f} sources={len(sources)}")
     return response
 
 
@@ -182,17 +206,39 @@ def query(request: QueryRequest):
 @app.post("/stream", dependencies=[Depends(rate_limit)])
 async def stream_query(request: Request, body: QueryRequest):
     async def event_gen():
+        _t_stream_start = time.monotonic()
+        print(f"[REQUEST_RECEIVED] stream query='{body.query[:80]}'")
         history = body.history or []
+
+        # --- Cache read (stream) ---
+        cache = get_cache()
+        cached = cache.get(body.query, history)
+        if cached is not None:
+            log_request(
+                query=body.query,
+                status=cached.status,
+                confidence=cached.confidence,
+                latency=cached.latency.dict(),
+                sources_count=len(cached.sources),
+                cached=True,
+            )
+            print(f"[RESPONSE_SENT] stream (cached) status={cached.status}")
+            yield f"data: {json.dumps({'type': 'token', 'content': cached.answer})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'confidence': cached.confidence, 'status': cached.status, 'sources': [s.dict() for s in cached.sources], 'history': history, 'latency': cached.latency.dict(), 'decision_trace': cached.decision_trace.dict(), 'critique_type': '', 'critique_score': 0.0, 'retried': False, 'decision_strength': ''})}\n\n"
+            return
 
         # Phases 1–2: retrieval (blocking — run in thread pool)
         try:
+            print(f"[RETRIEVE_START] query='{body.query[:80]}'")
             state = await asyncio.to_thread(
                 run_pipeline_to_context,
                 body.query,
-                5,
+                3,
                 history,
             )
         except Exception as e:
+            print(f"[ERROR] stream retrieval exception: {e}")
+            traceback.print_exc()
             log_request(
                 query=body.query,
                 status="error",
@@ -208,11 +254,24 @@ async def stream_query(request: Request, body: QueryRequest):
         agent = AnswerAgent()
         full_answer_parts: list[str] = []
 
+        # Use the resolved (pronoun-expanded) query for confidence scoring and prompting.
+        # Falls back to body.query if resolution didn't run (e.g. no history).
+        effective_query = state.resolved_query or body.query
+        print(f"[ANSWER_START] streaming tokens for query='{effective_query[:80]}'")
         # Phase 3: stream LLM answer tokens
-        async for token in agent.stream_answer(body.query, state):
-            full_answer_parts.append(token)
-            yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+        _t_llm = time.monotonic()
+        try:
+            async for token in agent.stream_answer(effective_query, state):
+                full_answer_parts.append(token)
+                yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+        except Exception as e:
+            print(f"[ERROR] stream_answer exception: {e}")
+            traceback.print_exc()
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            return
 
+        state.latency_ms["llm_ms"] = int((time.monotonic() - _t_llm) * 1000)
+        state.latency_ms["total_ms"] = int((time.monotonic() - _t_stream_start) * 1000)
         state.final_answer = "".join(full_answer_parts)
 
         # Composite confidence + status (same logic as sync path)
@@ -231,6 +290,11 @@ async def stream_query(request: Request, body: QueryRequest):
         state.chat_history.append({"query": body.query, "answer": state.final_answer})
         state.chat_history = state.chat_history[-3:]
 
+        print(f"[RETRIEVE_TIME] {state.latency_ms['retrieve_ms']}ms")
+        print(f"[RERANK_TIME]   {state.latency_ms['rerank_ms']}ms")
+        print(f"[LLM_TIME]      {state.latency_ms['llm_ms']}ms")
+        print(f"[TOTAL_TIME]    {state.latency_ms['total_ms']}ms")
+
         log_request(
             query=body.query,
             status=state.status,
@@ -240,6 +304,20 @@ async def stream_query(request: Request, body: QueryRequest):
             cached=False,
         )
 
+        # --- Cache write for stream (only successful answers) ---
+        if state.status == "success":
+            _stream_response = _build_response(
+                state.final_answer,
+                state.confidence,
+                state.chat_history,
+                state.sources,
+                state.latency_ms,
+                state.status,
+                state.decision_trace,
+            )
+            cache.set(body.query, history, _stream_response)
+
+        print(f"[RESPONSE_SENT] stream status={state.status} confidence={state.confidence:.3f}")
         yield f"data: {json.dumps({'type': 'done', 'confidence': state.confidence, 'status': state.status, 'sources': state.sources, 'history': state.chat_history, 'latency': state.latency_ms, 'decision_trace': state.decision_trace, 'critique_type': state._critique_type, 'critique_score': state._critique_score, 'retried': state._retried, 'decision_strength': state._decision_strength})}\n\n"
 
     return StreamingResponse(

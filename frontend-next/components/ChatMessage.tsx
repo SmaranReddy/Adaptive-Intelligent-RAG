@@ -17,10 +17,10 @@ interface Props {
 const ACTION_LABELS: Record<string, string> = {
   used_existing_knowledge:             "answered using existing knowledge",
   used_existing_knowledge_borderline:  "answered with limited confidence",
-  triggered_ingestion_low_docs:        "expanded knowledge due to limited documents",
-  triggered_ingestion_low_relevance:   "expanded knowledge due to weak relevance",
-  triggered_ingestion_low_confidence:  "expanded knowledge due to low confidence",
-  fallback_no_answer:                  "could not find sufficient information",
+  triggered_ingestion_low_docs:        "searched for additional sources",
+  triggered_ingestion_low_relevance:   "searched for additional sources",
+  triggered_ingestion_low_confidence:  "searched for additional sources",
+  fallback_no_answer:                  "answered using general knowledge",
 };
 
 function actionLabel(action: string): string {
@@ -117,7 +117,7 @@ function StatusBanner({ status }: { status: NonNullable<Message["status"]> }) {
     },
     fallback: {
       icon: "⊘",
-      text: "No sufficient sources found. The answer below may be unreliable.",
+      text: "Retrieved sources were insufficient — this answer draws on general knowledge and may be less precise.",
       cls: "bg-orange-950/60 border-orange-700/50 text-orange-300",
     },
     error: {
@@ -302,16 +302,16 @@ function AssistantMessage({ message }: { message: Message }) {
           }`}
         >
           {isThinking ? (
-            <div className="flex items-center gap-1.5 text-slate-500">
-              <span>Searching papers</span>
-              <span className="flex gap-0.5">
-                <span className="typing-dot w-1.5 h-1.5 rounded-full bg-slate-500 inline-block" />
-                <span className="typing-dot w-1.5 h-1.5 rounded-full bg-slate-500 inline-block" />
-                <span className="typing-dot w-1.5 h-1.5 rounded-full bg-slate-500 inline-block" />
+            <div className="flex flex-col gap-2 py-0.5 min-w-[5rem]">
+              <span className="flex items-end gap-1.5">
+                <span className="typing-dot w-2 h-2 rounded-full bg-indigo-400 inline-block" />
+                <span className="typing-dot w-2 h-2 rounded-full bg-indigo-400 inline-block" />
+                <span className="typing-dot w-2 h-2 rounded-full bg-indigo-400 inline-block" />
               </span>
+              <span className="text-xs text-slate-500 tracking-wide">Thinking...</span>
             </div>
           ) : (
-            <>
+            <div className="content-fade-in">
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={{
@@ -373,7 +373,7 @@ function AssistantMessage({ message }: { message: Message }) {
                   {showDebug && <DebugPanel message={message} />}
                 </>
               )}
-            </>
+            </div>
           )}
         </div>
 

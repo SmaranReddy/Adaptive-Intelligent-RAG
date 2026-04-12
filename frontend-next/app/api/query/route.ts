@@ -23,8 +23,8 @@ export async function POST(req: NextRequest) {
         query: body.query.trim(),
         history: body.history ?? null,
       }),
-      // Long timeout — ingestion path can take 60-120s
-      signal: AbortSignal.timeout(180_000),
+      // Ingestion is now async; responses arrive within ~10s
+      signal: AbortSignal.timeout(30_000),
     });
 
     if (!upstream.ok) {

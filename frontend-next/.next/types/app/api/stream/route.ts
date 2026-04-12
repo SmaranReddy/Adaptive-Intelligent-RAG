@@ -1,4 +1,4 @@
-// File: C:\Users\Asus\OneDrive\Desktop\improving ReSearch\re-search\frontend-next\app\api\stream\route.ts
+// File: C:\Users\Asus\OneDrive\Desktop\Adaptive Intelligent RAG\ResearchOS-Autonomous-AI-Research-System\frontend-next\app\api\stream\route.ts
 import * as entry from '../../../../../app/api/stream/route.js'
 import type { NextRequest } from 'next/server.js'
 

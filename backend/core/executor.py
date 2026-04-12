@@ -1,4 +1,6 @@
 import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import List, Dict
 
 from core.state import State
@@ -13,10 +15,48 @@ from ingestion.chunking import Chunker
 from ingestion.embeddings import Embedder
 from ingestion.indexing import Indexer
 from retrieval.query_transform import QueryTransformer
-from retrieval.retriever import RetrieverAgent
+from retrieval.retriever import RetrieverAgent, get_retriever
 from retrieval.reranker import Reranker
 from agents.answer_agent import AnswerAgent
 from agents.critique_agent import CritiqueAgent
+
+
+# ---------------------------------------------------------------------------
+# Background ingestion — non-blocking
+# ---------------------------------------------------------------------------
+
+_ingestion_lock = threading.Lock()
+_active_ingestions: set = set()
+
+
+def _launch_background_ingestion(query: str, num_papers: int) -> None:
+    """
+    Launch the full ingestion pipeline (search → download → embed → index)
+    in a daemon thread so the current request is NOT blocked.
+    The next request for the same or related topic will benefit from the
+    freshly indexed content.  Deduplicates concurrent runs for the same query.
+    """
+    with _ingestion_lock:
+        if query in _active_ingestions:
+            print(f"[BG_INGESTION] Already running for: '{query[:60]}'")
+            return
+        _active_ingestions.add(query)
+
+    def _run() -> None:
+        try:
+            print(f"[BG_INGESTION] Started: '{query[:60]}'")
+            bg_state = State(user_query=query, num_papers=num_papers)
+            for step in INGESTION_STEPS:
+                bg_state = STEP_REGISTRY[step](bg_state)
+            print(f"[BG_INGESTION] Complete: '{query[:60]}'")
+        except Exception as exc:
+            print(f"[BG_INGESTION] Error: {exc}")
+        finally:
+            with _ingestion_lock:
+                _active_ingestions.discard(query)
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
 
 
 # ---------------------------------------------------------------------------
@@ -43,8 +83,15 @@ def _step_preprocess(state: State) -> State:
         if p.get("clean_text"):
             print(f"  [preprocess] skip '{p.get('title', 'unknown')}' — already preprocessed")
             continue
+        full_text = p.get("full_text", "")
+        # Fall back to Tavily abstract/snippet when PDF download failed
+        if not full_text.strip():
+            fallback = p.get("abstract") or p.get("summary") or p.get("snippet") or ""
+            if fallback.strip():
+                print(f"  [preprocess] PDF empty — using abstract for '{p.get('title', 'unknown')}'")
+                full_text = fallback
         print(f"  [preprocess] processing '{p.get('title', 'unknown')}'")
-        p["clean_text"] = preprocessor.preprocess(p.get("full_text", ""))
+        p["clean_text"] = preprocessor.preprocess(full_text)
     return state
 
 
@@ -101,20 +148,40 @@ def _step_query_transform(state: State) -> State:
         state.user_query,
         chat_history=state.chat_history if state.chat_history else None,
     )
+    # rewritten_queries[0] is always the standalone resolved query
+    state.resolved_query = state.rewritten_queries[0] if state.rewritten_queries else state.user_query
     return state
+
+
+_RETRIEVAL_TOP_K = 5          # max docs per query
+_RETRIEVAL_TIMEOUT_S = 5.0    # per-Pinecone-call timeout (generous for cold start)
+_MAX_QUERIES = 3              # hard cap on fan-out
 
 
 def _step_retrieve(state: State) -> State:
     queries = state.rewritten_queries if state.rewritten_queries else [state.user_query]
-    print(f"[retrieve] querying Pinecone with {len(queries)} queries")
-    retriever = RetrieverAgent()
-    all_docs = []
-    for q in queries:
-        all_docs.extend(retriever.retrieve(q))
-    print(f"[RETRIEVE] total docs before dedup: {len(all_docs)}")
+    # Hard cap — defensive guard regardless of how many queries were generated
+    queries = queries[:_MAX_QUERIES]
 
-    seen_ids = set()
-    merged = []
+    # Confirmation log — if this does NOT appear in server output, the old
+    # cached process is still running.  Restart the server to pick up new code.
+    print(f"[PARALLEL_RETRIEVE_ACTIVE]")
+    print(f"[NUM_QUERIES] {len(queries)}")
+    print(f"[RETRIEVE_START] querying Pinecone with {len(queries)} queries")
+
+    retriever = get_retriever()  # reuse singleton — avoids recreating Pinecone client
+    # retrieve_many: embeds queries sequentially (one GIL-safe pass on the
+    # shared SentenceTransformer model), then fires all Pinecone calls in
+    # parallel (pure network I/O — GIL released, truly concurrent).
+    all_docs = retriever.retrieve_many(
+        queries, top_k=_RETRIEVAL_TOP_K, timeout_s=_RETRIEVAL_TIMEOUT_S
+    )
+
+    print(f"[DOCS_FETCHED] {len(all_docs)} before dedup")
+
+    # Deduplicate by chunk id (or first 100 chars of text as fallback)
+    seen_ids: set = set()
+    merged: list = []
     for doc in all_docs:
         key = doc.get("id") or doc.get("text", "")[:100]
         if key not in seen_ids:
@@ -128,14 +195,21 @@ def _step_retrieve(state: State) -> State:
 
 def _step_rerank(state: State) -> State:
     print(f"[rerank] scoring {len(state.raw_docs)} docs")
-    state.ranked_docs = Reranker().rerank(state.user_query, state.raw_docs)
+    # Use the resolved (standalone) query so reranking is context-aware,
+    # e.g. "compare it to pure transformer" → "Compare BERT and GPT to pure Transformer"
+    rerank_query = state.resolved_query or state.user_query
+    state.ranked_docs = Reranker().rerank(rerank_query, state.raw_docs)
     return state
 
 
 def _step_answer(state: State) -> State:
-    print("[answer] generating final answer")
+    print("[ANSWER_START] generating final answer")
+    # Use the resolved standalone query for confidence scoring and prompt construction.
+    # This ensures "compare it to pure transformer" → "Compare BERT and GPT to pure Transformer"
+    # so the LLM and confidence gate operate on an unambiguous question.
+    effective_query = state.resolved_query or state.user_query
     state.final_answer = AnswerAgent().generate_answer(
-        state.user_query, state.ranked_docs, chat_history=state.chat_history, state=state
+        effective_query, state.ranked_docs, chat_history=state.chat_history, state=state
     )
     return state
 
@@ -271,11 +345,9 @@ def _retry_with_expanded_context(state: State) -> State:
 
         # Retrieve with increased top_k to pull in more candidate docs
         _expanded_top_k = state.num_papers + 2
-        queries = state.rewritten_queries if state.rewritten_queries else [state.user_query]
-        retriever = RetrieverAgent()
-        all_docs = []
-        for q in queries:
-            all_docs.extend(retriever.retrieve(q, top_k=_expanded_top_k))
+        queries = (state.rewritten_queries if state.rewritten_queries else [state.user_query])[:_MAX_QUERIES]
+        retriever = get_retriever()  # reuse singleton
+        all_docs = retriever.retrieve_many(queries, top_k=_expanded_top_k, timeout_s=_RETRIEVAL_TIMEOUT_S)
         # Dedup (mirrors _step_retrieve logic)
         seen_ids: set = set()
         merged = []
@@ -293,7 +365,8 @@ def _retry_with_expanded_context(state: State) -> State:
         state = _run_step(state, "query_transform")
         state = _run_step(state, "retrieve")
         # Rerank with a smaller top_k to keep only the most precise docs
-        state.ranked_docs = Reranker().rerank(state.user_query, state.raw_docs, top_k=3)
+        rerank_query = state.resolved_query or state.user_query
+        state.ranked_docs = Reranker().rerank(rerank_query, state.raw_docs, top_k=3)
         print(f"[RETRY] tight rerank → {len(state.ranked_docs)} docs (top_k=3)")
 
     elif critique_type == "not_grounded":
@@ -336,13 +409,14 @@ def _retry_with_expanded_context(state: State) -> State:
 # ---------------------------------------------------------------------------
 
 def run_pipeline_to_context(
-    query: str, num_papers: int = 5, chat_history: list = None
+    query: str, num_papers: int = 3, chat_history: list = None
 ) -> State:
     """
     Runs the retrieval pipeline (query_transform → retrieve → [ingest] → rerank).
     Returns State with ranked_docs and sources populated.
     Used by the /stream endpoint before token-by-token answer generation.
     """
+    _t_ctx_start = time.monotonic()
     state = State(user_query=query, num_papers=num_papers)
     if chat_history:
         state.chat_history = list(chat_history)
@@ -364,11 +438,11 @@ def run_pipeline_to_context(
     )
     state._decision_strength = _strength
     if _should_ingest:
-        print(f"[INGESTION TRIGGERED] Phase 2a reason={_reason} strength={_strength} → ingesting")
-        for step in INGESTION_STEPS:
-            state = _run_step(state, step)
-        state = _run_step(state, "retrieve")
-        state.ingestion_done = True
+        print(f"[INGESTION TRIGGERED] Phase 2a reason={_reason} strength={_strength} → background")
+        # Non-blocking: ingest in background, answer with existing docs immediately.
+        # The next request benefits from freshly indexed content.
+        _launch_background_ingestion(state.user_query, state.num_papers)
+        state.ingestion_done = True  # prevents Phase 2b/2c from double-triggering
         state.decision_trace["action"] = REASON_TO_ACTION[_reason]
 
     # Phase 2b: multi-signal post-rerank guard (llm_score not yet available)
@@ -389,12 +463,10 @@ def run_pipeline_to_context(
         docs=state.ranked_docs,
     )
     state._decision_strength = _strength
-    if _should_ingest:
-        print(f"[INGESTION CHECK] Phase 2b reason={_reason} strength={_strength} → triggering ingestion")
-        for step in INGESTION_STEPS:
-            state = _run_step(state, step)
-        state = _run_step(state, "retrieve")
-        state = _run_step(state, "rerank")
+    if _should_ingest and not state.ingestion_done:
+        print(f"[INGESTION CHECK] Phase 2b reason={_reason} strength={_strength} → background")
+        # Non-blocking: ingest in background, answer with current ranked docs.
+        _launch_background_ingestion(state.user_query, state.num_papers)
         state.ingestion_done = True
         state.decision_trace["action"] = REASON_TO_ACTION[_reason]
     else:
@@ -410,6 +482,8 @@ def run_pipeline_to_context(
             seen.add(title)
             state.sources.append({"title": title, "url": url})
 
+    print(f"[RETRIEVE_TIME] {state.latency_ms['retrieve_ms']}ms")
+    print(f"[RERANK_TIME]   {state.latency_ms['rerank_ms']}ms")
     return state
 
 
@@ -418,12 +492,13 @@ def run_pipeline_to_context(
 # ---------------------------------------------------------------------------
 
 def run_pipeline(
-    query: str, num_papers: int = 5, chat_history: list = None
+    query: str, num_papers: int = 3, chat_history: list = None
 ) -> tuple[str, float, list, list, dict, str, dict]:
     """
     Returns (answer, confidence, updated_chat_history, sources, latency_ms, status).
     Pass chat_history from the previous call to enable conversational memory.
     """
+    _t_pipeline_start = time.monotonic()
     # Phases 1–2: retrieval
     state = run_pipeline_to_context(query, num_papers, chat_history)
 
@@ -434,7 +509,8 @@ def run_pipeline(
             doc.get("text", "") for doc in state.ranked_docs if isinstance(doc, dict)
         )
         agent = AnswerAgent()
-        confidence = agent.get_context_confidence(state.user_query, context_text)
+        _effective_query = state.resolved_query or state.user_query
+        confidence = agent.get_context_confidence(_effective_query, context_text)
         state.confidence = confidence
         print(f"[ANSWER CHECK] Phase 2c confidence: {confidence:.2f}")
 
@@ -535,6 +611,11 @@ def run_pipeline(
             state.decision_trace["action"] = "fallback_no_answer"
         else:
             state.decision_trace["action"] = "used_existing_knowledge"
+    state.latency_ms["total_ms"] = int((time.monotonic() - _t_pipeline_start) * 1000)
+    print(f"[RETRIEVE_TIME] {state.latency_ms['retrieve_ms']}ms")
+    print(f"[RERANK_TIME]   {state.latency_ms['rerank_ms']}ms")
+    print(f"[LLM_TIME]      {state.latency_ms['llm_ms']}ms")
+    print(f"[TOTAL_TIME]    {state.latency_ms['total_ms']}ms")
     print(f"[PIPELINE] status={state.status}  confidence={state.confidence:.3f}")
 
     return (

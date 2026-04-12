@@ -15,7 +15,8 @@ class State:
         self.final_message: Optional[str] = None
 
         # --- retrieval ---
-        self.rewritten_queries: List[str] = []  # [original, HyDE, variation1, ...]
+        self.resolved_query: str = ""           # standalone rewrite of user_query (pronoun-resolved)
+        self.rewritten_queries: List[str] = []  # [resolved, HyDE, variation1, ...]
         self.raw_docs: List[Dict] = []
         self.ranked_docs: List[Dict] = []
 
@@ -35,6 +36,7 @@ class State:
             "retrieve_ms": 0,
             "rerank_ms": 0,
             "llm_ms": 0,
+            "total_ms": 0,
         }
         self.status: str = "success"        # "success" | "low_confidence" | "fallback" | "error"
 

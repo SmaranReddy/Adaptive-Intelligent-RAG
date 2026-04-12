@@ -26,7 +26,7 @@ class AnswerAgent:
         self._api_key = api_key
         print("✅ AnswerAgent ready (Groq LLM).")
 
-    CONFIDENCE_THRESHOLD = 0.5  # below this → context is treated as insufficient
+    CONFIDENCE_THRESHOLD = 0.35  # below this → context is treated as insufficient
 
     def _call_with_retry(self, messages: list, temperature: float = 0.1, max_tokens: int = 1000) -> str:
         """
@@ -136,12 +136,9 @@ class AnswerAgent:
                     + "\n".join(lines) + "\n\n"
                 )
 
-        return f"""You are a research assistant. Answer the question using ONLY the current context provided below.
-Do NOT use any outside knowledge. Do NOT hallucinate or infer beyond what is stated.
+        return f"""You are a research assistant. Answer the question using the context provided below.
+Prioritise information from the context. Only use outside knowledge to fill minor gaps — do NOT fabricate specific claims that contradict the context.
 Use the conversation history ONLY to resolve pronouns and references (e.g. "them", "it", "compare with") — do NOT treat past answers as new factual sources.
-
-If the context does not contain enough information to answer, respond with exactly:
-"I don't have enough information to answer this question."
 
 ---
 {history_block}Current Context:
@@ -151,12 +148,56 @@ If the context does not contain enough information to answer, respond with exact
 Current Question: {query}
 
 Respond in this structure:
-**Explanation:** (2-4 sentences directly answering the question from the context)
+**Explanation:** (2-4 sentences directly answering the question)
 
 **Key Points:**
-- (bullet point from context)
-- (bullet point from context)
+- (bullet point)
+- (bullet point)
 - (add more as needed)
+"""
+
+    def _build_weak_context_prompt(self, query: str, context_text: str, chat_history: list) -> str:
+        history_block = ""
+        if chat_history:
+            turns = chat_history[-2:]
+            lines = []
+            for turn in turns:
+                q = turn.get("query", "")
+                a = turn.get("answer", "")
+                if q:
+                    lines.append(f"Q: {q}")
+                if a:
+                    lines.append(f"A: {a[:300]}...")
+            if lines:
+                history_block = (
+                    "Conversation History:\n" + "\n".join(lines) + "\n\n"
+                )
+
+        context_section = (
+            f"Available Context (may be limited or only partially relevant):\n{context_text}\n---\n\n"
+            if context_text.strip()
+            else ""
+        )
+
+        return f"""You are a research assistant. The retrieved context for this question is limited or not directly relevant.
+
+{context_section}{history_block}Question: {query}
+
+Instructions:
+- Use any relevant information from the context above if it helps.
+- Where the context is insufficient, answer using your general knowledge.
+- Be honest: if you are drawing on general knowledge rather than the provided sources, say so briefly.
+- Do NOT refuse to answer. Always provide the best answer you can.
+
+Respond in this structure:
+**Explanation:** (2-4 sentences answering the question)
+
+**Key Points:**
+- (bullet point)
+- (bullet point)
+- (add more as needed)
+
+**Note:** (one sentence indicating if this answer relies on general knowledge rather than the retrieved sources)
 """
 
     def generate_answer(self, query: str, context, chat_history: list = [], state=None) -> str:
@@ -172,40 +213,38 @@ Respond in this structure:
         if state is not None:
             state.sources = sources
 
-        if not context_text.strip():
-            if state is not None:
-                state.is_fallback = True
-            return "I don't have enough information to answer this question."
-
         # --- confidence gate ---
         # Reuse pre-computed confidence from Phase 2c if available (eliminates duplicate LLM call)
         if state is not None and state.confidence_cached:
             confidence = state.confidence
             print(f"[ANSWER] reusing cached confidence: {confidence:.2f}")
         else:
-            confidence = self.get_context_confidence(query, context_text)
+            confidence = self.get_context_confidence(query, context_text) if context_text.strip() else 0.0
             print(f"[ANSWER CHECK] confidence: {confidence:.2f}")
 
         if state is not None:
             state.confidence = confidence
 
-        if confidence < self.CONFIDENCE_THRESHOLD:
+        weak_context = not context_text.strip() or confidence < self.CONFIDENCE_THRESHOLD
+        if weak_context:
+            print(f"[WEAK_CONTEXT_FALLBACK] confidence={confidence:.2f} — generating answer with general knowledge")
             if state is not None:
                 state.is_fallback = True
-            return "The available sources do not contain sufficient information to answer this question reliably."
+            prompt = self._build_weak_context_prompt(query, context_text, chat_history)
+        else:
+            if state is not None:
+                state.is_fallback = False
+            prompt = self._build_prompt(query, context_text, chat_history)
 
-        if state is not None:
-            state.is_fallback = False
-
-        prompt = self._build_prompt(query, context_text, chat_history)
-
+        system_msg = (
+            "You are a research assistant. When context is limited, use your general knowledge and be transparent about it."
+            if weak_context
+            else "You are a research assistant. Prioritise the provided context. Never fabricate specific claims not supported by it."
+        )
         try:
             return self._call_with_retry(
                 [
-                    {
-                        "role": "system",
-                        "content": "You are a research assistant that answers only from provided context. Never fabricate information.",
-                    },
+                    {"role": "system", "content": system_msg},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.1,
@@ -229,37 +268,36 @@ Respond in this structure:
         context_text, sources = self._build_context_text(state.ranked_docs)
         state.sources = sources
 
-        if not context_text.strip():
-            state.is_fallback = True
-            state.confidence = 0.0
-            yield "I don't have enough information to answer this question."
-            return
-
         # Confidence check (sync → thread)
         if state.confidence_cached:
             confidence = state.confidence
-        else:
+        elif context_text.strip():
             confidence = await asyncio.to_thread(self.get_context_confidence, query, context_text)
+        else:
+            confidence = 0.0
         state.confidence = confidence
         print(f"[STREAM] confidence: {confidence:.2f}")
 
-        if confidence < self.CONFIDENCE_THRESHOLD:
+        weak_context = not context_text.strip() or confidence < self.CONFIDENCE_THRESHOLD
+        if weak_context:
+            print(f"[WEAK_CONTEXT_FALLBACK] confidence={confidence:.2f} — streaming answer with general knowledge")
             state.is_fallback = True
-            yield "The available sources do not contain sufficient information to answer this question reliably."
-            return
+            prompt = self._build_weak_context_prompt(query, context_text, state.chat_history)
+        else:
+            state.is_fallback = False
+            prompt = self._build_prompt(query, context_text, state.chat_history)
 
-        state.is_fallback = False
-        prompt = self._build_prompt(query, context_text, state.chat_history)
-
+        system_msg = (
+            "You are a research assistant. When context is limited, use your general knowledge and be transparent about it."
+            if weak_context
+            else "You are a research assistant. Prioritise the provided context. Never fabricate specific claims not supported by it."
+        )
         async_client = AsyncGroq(api_key=self._api_key)
         try:
             stream = await async_client.chat.completions.create(
                 model="llama-3.1-8b-instant",
                 messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a research assistant that answers only from provided context. Never fabricate information.",
-                    },
+                    {"role": "system", "content": system_msg},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.1,

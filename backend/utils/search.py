@@ -18,15 +18,19 @@ class TavilyAgent:
         load_dotenv()
         self.api_key = os.getenv("TAVILY_API_KEY")
         if not self.api_key:
-            raise ValueError("❌ Missing TAVILY_API_KEY in environment variables.")
+            print("[ERROR] Missing TAVILY_API_KEY — Tavily search will return empty results.")
         self.base_url = "https://api.tavily.com/search"
-        print("[OK] Tavily client initialized successfully")
+        print("[OK] Tavily client initialized")
 
     # ====================================================
     # 🔍 Search academic papers (returns EXACT k papers)
     # ====================================================
     def search(self, query: str, max_results: int = 5, days: int = 90):
-        print(f"🔍 Searching Tavily for: {query} (limit={max_results})")
+        if not self.api_key:
+            print("[TAVILY_CALL] skipped — no API key")
+            return []
+
+        print(f"[TAVILY_CALL] query='{query[:80]}' max_results={max_results}")
 
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -34,12 +38,15 @@ class TavilyAgent:
         }
 
         payload = {
-            "query": (
-                query +
-                " research paper site:arxiv.org OR site:springer.com OR "
-                "site:ieeexplore.ieee.org OR site:dl.acm.org filetype:pdf"
-            ),
-            "num_results": max_results * 3,   # fetch more than needed
+            "query": query + " research paper arxiv",
+            "max_results": max_results * 4,   # fetch more since many will be filtered
+            "search_depth": "advanced",
+            "include_domains": [
+                "arxiv.org",
+                "semanticscholar.org",
+                "aclanthology.org",
+                "openreview.net",
+            ],
         }
 
         try:
@@ -47,7 +54,7 @@ class TavilyAgent:
             response.raise_for_status()
             data = response.json()
         except Exception as e:
-            print(f"❌ Tavily API error: {e}")
+            print(f"[ERROR] Tavily API call failed: {e}")
             return []
 
         raw_results = data.get("results", [])
@@ -61,16 +68,15 @@ class TavilyAgent:
         for r in raw_results:
             url = r.get("url", "")
             title = r.get("title", "Untitled Paper").strip()
-            abstract = r.get("snippet", "").strip()
+            abstract = (r.get("content") or r.get("snippet") or "").strip()
 
             if not url or url in seen:
                 continue
             seen.add(url)
 
-            # Convert to direct PDF URL
-            pdf = self._normalize_pdf_url(url)
-            if not pdf:
-                continue
+            # Try to get a direct PDF URL; fall back to original URL
+            # (abstract content will be used if PDF download fails)
+            pdf = self._normalize_pdf_url(url) or url
 
             papers.append({
                 "title": title,
@@ -84,7 +90,7 @@ class TavilyAgent:
             if len(papers) >= max_results:
                 break
 
-        print(f"📄 Tavily returned {len(papers)} PDFs (exact cap = {max_results})")
+        print(f"[OK] Tavily returned {len(papers)} results (cap={max_results})")
         return papers
 
     # ====================================================
