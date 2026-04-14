@@ -134,6 +134,17 @@ export default function ChatPage() {
                   : m
               )
             );
+          } else if (event.type === "refine") {
+            // Post-stream critique: backend replaced a low-quality answer.
+            // Swap in the refined content and mark the message so the UI
+            // can show a "refined" badge.
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantId
+                  ? { ...m, content: event.content as string, refined: true }
+                  : m
+              )
+            );
           } else if (event.type === "done") {
             const latencyMs = Date.now() - start;
             setMessages((prev) =>

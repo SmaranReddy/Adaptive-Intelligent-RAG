@@ -47,6 +47,7 @@ services:
       - /app/node_modules             # anonymous volume — keeps container's node_modules intact
     environment:
       - WATCHPACK_POLLING=true        # required for HMR on Windows/Docker Desktop
+      - BACKEND_URL=http://backend:8000
     depends_on:
       - backend                       # wait for backend container to start (not for health check to pass)
     restart: unless-stopped

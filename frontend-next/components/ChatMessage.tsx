@@ -94,10 +94,10 @@ function SourceChips({ sources }: { sources: NonNullable<Message["sources"]> }) 
           ) : (
             <span
               key={i}
-              className="text-xs px-2 py-1 rounded-md border border-[#2d3148] text-slate-400 truncate max-w-[220px]"
+              className="text-xs px-2 py-1 rounded-md border border-[#2d3148] text-slate-400 truncate max-w-[220px] opacity-60 cursor-default"
               title={s.title}
             >
-              📄 {s.title}
+              {s.title}
             </span>
           )
         )}
@@ -192,6 +192,17 @@ function RetryBadge({ retried }: { retried?: boolean }) {
     <div className="mt-2 flex items-center gap-1.5 text-xs text-emerald-400/80 bg-emerald-950/30 border border-emerald-700/30 rounded-md px-2.5 py-1.5 w-fit">
       <span>🔄</span>
       <span>Answer improved after self-correction</span>
+    </div>
+  );
+}
+
+/** Refined badge — shown when post-stream critique replaced a low-quality answer */
+function RefinedBadge({ refined }: { refined?: boolean }) {
+  if (!refined) return null;
+  return (
+    <div className="mt-2 flex items-center gap-1.5 text-xs text-amber-400/80 bg-amber-950/30 border border-amber-700/30 rounded-md px-2.5 py-1.5 w-fit">
+      <span>✏️</span>
+      <span>Answer refined — initial response had low source grounding</span>
     </div>
   );
 }
@@ -347,8 +358,9 @@ function AssistantMessage({ message }: { message: Message }) {
                     </p>
                   )}
 
-                  {/* Self-correction badge */}
+                  {/* Self-correction and post-stream refinement badges */}
                   <RetryBadge retried={message.retried} />
+                  <RefinedBadge refined={message.refined} />
 
                   {/* Sources */}
                   {message.sources && message.sources.length > 0 && (
@@ -360,29 +372,33 @@ function AssistantMessage({ message }: { message: Message }) {
                     <StatusBanner status={message.status} />
                   )}
 
-                  {/* Debug toggle */}
-                  <div className="mt-3 pt-3 border-t border-white/5">
-                    <button
-                      onClick={() => setShowDebug((v) => !v)}
-                      className="text-xs text-slate-600 hover:text-slate-400 transition-colors"
-                    >
-                      {showDebug ? "Hide debug info" : "Show debug info"}
-                    </button>
-                  </div>
+                  {/* Debug toggle — dev only */}
+                  {process.env.NODE_ENV === "development" && (
+                    <>
+                      <div className="mt-3 pt-3 border-t border-white/5">
+                        <button
+                          onClick={() => setShowDebug((v) => !v)}
+                          className="text-xs text-slate-600 hover:text-slate-400 transition-colors"
+                        >
+                          {showDebug ? "Hide debug info" : "Show debug info"}
+                        </button>
+                      </div>
 
-                  {showDebug && <DebugPanel message={message} />}
+                      {showDebug && <DebugPanel message={message} />}
+                    </>
+                  )}
                 </>
               )}
             </div>
           )}
         </div>
 
-        {/* Per-stage latency — shown below the bubble (hidden when debug panel is open) */}
-        {isDone && !showDebug && message.latency && (
+        {/* Per-stage latency — dev only */}
+        {process.env.NODE_ENV === "development" && isDone && !showDebug && message.latency && (
           <LatencyRow latency={message.latency} />
         )}
 
-        {isDone && !showDebug && typeof message.latencyMs === "number" && (
+        {process.env.NODE_ENV === "development" && isDone && !showDebug && typeof message.latencyMs === "number" && (
           <p className="mt-0.5 ml-1 text-xs text-slate-700">
             Total: {(message.latencyMs / 1000).toFixed(1)}s
           </p>

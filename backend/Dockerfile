@@ -14,6 +14,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
 # requirements.txt changes.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+# Pre-download the fastembed ONNX model so the first request has no cold-start penalty
+RUN python -c "from fastembed import TextEmbedding; TextEmbedding('sentence-transformers/all-MiniLM-L6-v2')"
 
 EXPOSE 8000
 

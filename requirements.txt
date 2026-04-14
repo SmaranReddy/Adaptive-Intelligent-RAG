@@ -1,10 +1,8 @@
-streamlit
 groq
 requests
-sentence-transformers
+fastembed
 numpy
 PyPDF2
-tavily
 pinecone
 python-dotenv
 fastapi

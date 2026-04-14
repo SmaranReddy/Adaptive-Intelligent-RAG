@@ -34,6 +34,7 @@ export interface Message {
   critiqueType?: string;      // "incomplete" | "incorrect" | "not_grounded" | "good" | ""
   critiqueScore?: number;     // 0–1
   retried?: boolean;          // true if self-correction retry ran
+  refined?: boolean;          // true if post-stream critique replaced the answer
   decisionStrength?: string;  // "strong" | "moderate" | "weak"
 }
 

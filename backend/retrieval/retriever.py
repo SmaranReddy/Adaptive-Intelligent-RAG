@@ -51,7 +51,7 @@ class RetrieverAgent:
         print("[OK] RetrieverAgent connected to Pinecone index.")
 
     def embed_query(self, text: str) -> list:
-        return self.model.encode(text).tolist()
+        return next(self.model.embed([text])).tolist()
 
     def retrieve(self, query: str, top_k: int = 5, min_score: float = None, per_paper_cap: int = None):
         """Retrieve top relevant chunks for the query"""
@@ -156,11 +156,16 @@ class RetrieverAgent:
         if uncached:
             with ThreadPoolExecutor(max_workers=len(uncached)) as pool:
                 futures = [(pool.submit(_pinecone_query, q), q) for q in uncached]
+                # Use a shared wall-clock deadline so that timeouts across futures
+                # don't compound (5s × N queries).  All futures run in parallel;
+                # the total wait is capped at timeout_s regardless of N.
+                deadline = time.monotonic() + timeout_s
                 for fut, q in futures:
+                    remaining = max(0.05, deadline - time.monotonic())
                     try:
-                        pinecone_docs[q] = fut.result(timeout=timeout_s)
+                        pinecone_docs[q] = fut.result(timeout=remaining)
                     except FutureTimeoutError:
-                        print(f"[WARN] Pinecone timeout ({timeout_s}s) for '{q[:50]}'")
+                        print(f"[WARN] Pinecone timeout ({timeout_s}s total) for '{q[:50]}'")
                         pinecone_docs[q] = []
                     except Exception as exc:
                         print(f"[WARN] Pinecone error for '{q[:50]}': {exc}")

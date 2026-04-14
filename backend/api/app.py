@@ -21,8 +21,14 @@ from core.cache import get_cache
 from core.confidence import compute_composite, derive_status, LOW_CONFIDENCE_THRESHOLD
 from core.rate_limiter import rate_limit
 from core.logger import log_request
+from core.critique import critique_answer
 from agents.answer_agent import AnswerAgent
+from agents.critique_agent import CritiqueAgent
 from retrieval.retriever import get_retriever
+
+# Confidence threshold below which the streaming path runs a post-answer
+# critique pass and emits a "refine" SSE event to replace the displayed answer.
+_STREAM_CRITIQUE_THRESHOLD = 0.40
 
 app = FastAPI(title="re-search API")
 
@@ -39,19 +45,6 @@ async def _validate_env():
             print(f"[WARN] Missing env var {var!r} — {consequence}")
 
 
-@app.on_event("startup")
-async def _warmup_pinecone():
-    """
-    Fire a cheap Pinecone query on server startup so the first real user
-    request does not pay the cold-start penalty (~3-8s on free-tier serverless).
-    Also pre-loads the SentenceTransformer model into memory.
-    """
-    try:
-        retriever = get_retriever()          # creates singleton + loads embedding model
-        await asyncio.to_thread(retriever.retrieve, "warmup", top_k=1)
-        print("[WARMUP] Pinecone + embedding model ready")
-    except Exception as exc:
-        print(f"[WARMUP] non-fatal warm-up error: {exc}")
 
 app.add_middleware(
     CORSMiddleware,
@@ -304,6 +297,47 @@ async def stream_query(request: Request, body: QueryRequest):
         compute_composite(state)
         state.status = derive_status(state)
         print(f"[STREAM] status={state.status}  confidence={state.confidence:.3f}")
+
+        # Post-stream critique pass — runs only for low-confidence answers.
+        # Because it fires AFTER all tokens are already sent, latency is invisible
+        # to the user for the initial render.  If the answer is poor, a "refine"
+        # SSE event replaces the displayed content before the "done" event arrives.
+        if state.confidence < _STREAM_CRITIQUE_THRESHOLD and not state.is_fallback:
+            print(f"\n[STREAM_CRITIQUE_START] confidence={state.confidence:.2f} < {_STREAM_CRITIQUE_THRESHOLD}")
+            _t_sc = time.monotonic()
+            _ctx_texts = [doc.get("text", "") for doc in state.ranked_docs if isinstance(doc, dict)]
+
+            _sc_score, _sc_reason, _sc_type = await asyncio.to_thread(
+                critique_answer, body.query, state.final_answer, _ctx_texts
+            )
+            print(f"[STREAM_CRITIQUE_SCORE] score={_sc_score:.2f}  type={_sc_type}  reason={_sc_reason}")
+
+            if _sc_score < 0.40:
+                if _sc_type == "not_grounded":
+                    # Answer is hallucinated — replace with an honest fallback
+                    _refined = (
+                        "**Low Confidence Notice**\n\n"
+                        "The retrieved papers don't contain reliable information specifically "
+                        "about this topic, and the initial response may include inaccurate details.\n\n"
+                        "I've triggered a search for additional sources — asking again should "
+                        "produce a better-grounded answer.\n\n"
+                        "Try rephrasing, or ask about a closely related concept that may be "
+                        "better covered in the literature."
+                    )
+                else:
+                    # Answer is incomplete or incorrect — use CritiqueAgent to tighten it
+                    _refined = await asyncio.to_thread(
+                        CritiqueAgent().critique,
+                        state.final_answer,
+                        _ctx_texts,
+                        body.query,
+                    )
+
+                if _refined != state.final_answer:
+                    state.final_answer = _refined
+                    yield f"data: {json.dumps({'type': 'refine', 'content': _refined})}\n\n"
+
+            print(f"[STREAM_CRITIQUE_TIME] {int((time.monotonic() - _t_sc) * 1000)}ms")
 
         # Finalise action for streaming path
         if not state.decision_trace["action"]:

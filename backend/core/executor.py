@@ -35,7 +35,7 @@ MAX_TOTAL_TIME = 15.0          # seconds
 # (output of get_context_confidence, typically 0.55–0.80 for good context),
 # NOT the composite score shown in API responses (which includes rerank signal).
 # 0.65 corresponds to composite ~0.80+ in practice.
-_EARLY_EXIT_CONF = 0.65
+_EARLY_EXIT_CONF = 0.60
 
 # Rerank median threshold for skipping the Phase 2c LLM confidence call.
 # The reranker already scores docs 0–10 for semantic relevance.
@@ -460,9 +460,65 @@ def run_pipeline_to_context(
     if chat_history:
         state.chat_history = list(chat_history)
 
-    # Phase 1: probe retrieval with existing index
-    state = _run_step(state, "query_transform")
-    state = _run_step(state, "retrieve")
+    # Phase 1: query_transform + initial Pinecone probe run in parallel.
+    # QueryTransformer calls the Groq API (pure I/O — GIL released), so the
+    # probe's embed+Pinecone runs concurrently, hiding transform latency behind
+    # retrieve latency.  Wall time ≈ max(transform, probe) instead of sum.
+    print(f"\n[QUERY_TRANSFORM_START] {_ts()}")
+    print(f"\n[RETRIEVE_START] {_ts()}")
+    _t_retrieve = time.monotonic()
+
+    retriever = get_retriever()
+    with ThreadPoolExecutor(max_workers=2) as _pool:
+        _transform_fut = _pool.submit(
+            QueryTransformer().transform,
+            state.user_query,
+            state.chat_history if state.chat_history else None,
+        )
+        # Probe with original query while Groq generates variations
+        _probe_fut = _pool.submit(retriever.retrieve, state.user_query, _RETRIEVAL_TOP_K)
+
+        try:
+            _rewritten = _transform_fut.result(timeout=6.0)
+        except Exception as _e:
+            print(f"[WARN] query_transform failed ({_e}) — using original query")
+            _rewritten = [state.user_query]
+
+        try:
+            _probe_docs = _probe_fut.result(timeout=_RETRIEVAL_TIMEOUT_S)
+        except Exception:
+            _probe_docs = []
+
+    state.rewritten_queries = (_rewritten or [state.user_query])[:_MAX_QUERIES]
+    state.resolved_query = state.rewritten_queries[0]
+    print(f"[PARALLEL_RETRIEVE_ACTIVE]")
+    print(f"[MULTI-QUERY] {len(state.rewritten_queries)} queries (parallel transform+probe)")
+
+    # Fire variation queries (original already probed above)
+    _variations = state.rewritten_queries[1:]
+    _variation_docs = (
+        retriever.retrieve_many(_variations, top_k=_RETRIEVAL_TOP_K, timeout_s=_RETRIEVAL_TIMEOUT_S)
+        if _variations else []
+    )
+
+    # Merge + dedup
+    _all_raw = (_probe_docs or []) + _variation_docs
+    _seen: set = set()
+    _merged: list = []
+    for _doc in _all_raw:
+        _key = _doc.get("id") or _doc.get("text", "")[:100]
+        if _key not in _seen:
+            _seen.add(_key)
+            _merged.append(_doc)
+    state.raw_docs = _merged
+
+    _retrieve_ms = int((time.monotonic() - _t_retrieve) * 1000)
+    state.latency_ms["retrieve_ms"] = state.latency_ms.get("retrieve_ms", 0) + _retrieve_ms
+    print(f"[NUM_QUERIES] {len(state.rewritten_queries)}")
+    print(f"[DOCS_FETCHED] {len(_all_raw)} before dedup")
+    print(f"[RETRIEVE] after dedup: {len(_merged)}")
+    print(f"[RETRIEVE_TIME] {_retrieve_ms}ms")
+    print(f"[STEP] retrieve → {len(state.raw_docs)} docs retrieved")
 
     # Phase 2a: multi-signal pre-rerank guard (rerank not yet available)
     _raw_scores = [d.get("score", 0.0) for d in state.raw_docs if d.get("score") is not None]
@@ -646,28 +702,39 @@ def run_pipeline(
         # It reflects retrieval uncertainty, not answer quality. For well-indexed
         # queries strength is always "strong", which would permanently block retry.
         # The critique score is the correct signal for whether the answer needs improvement.
+        # Time budget gate: skip retry if the pipeline is already near the ceiling.
+        # A retry costs another query_transform + retrieve + rerank + answer (~5-10s).
+        # If we're already past (MAX_TOTAL_TIME - 5s), there's no budget for that.
+        _elapsed_pre_retry = time.monotonic() - _t_pipeline_start
+        _skip_3c_budget = _elapsed_pre_retry >= MAX_TOTAL_TIME - 5.0
+
         _gate_open = (
             RETRY_ENABLED
             and not disable_retry
             and state._critique_score < 0.7
             and not state._retried
+            and not _skip_3c_budget
         )
         print(
             f"[RETRY_DEBUG] RETRY_ENABLED={RETRY_ENABLED}  disable_retry={disable_retry}  "
+            f"elapsed={_elapsed_pre_retry:.1f}s  budget_ok={not _skip_3c_budget}  "
             f"decision_strength={state._decision_strength!r}  "
             f"critique_score={state._critique_score:.2f}  "
             f"critique_type={state._critique_type!r}  "
             f"retried={state._retried}  gate_open={_gate_open}"
         )
+        if _skip_3c_budget:
+            print(f"[RETRY_SKIP] time budget ({_elapsed_pre_retry:.1f}s / {MAX_TOTAL_TIME}s max)")
 
         # Phase 3c: conditional retry — fires when answer quality is poor (score < 0.7).
-        # Gated by RETRY_ENABLED (module flag) and disable_retry (per-request override).
-        # A single retry is allowed; _retried prevents infinite loops.
+        # Gated by RETRY_ENABLED (module flag), disable_retry (per-request override),
+        # and the time budget check above.  A single retry is allowed; _retried prevents loops.
         if (
             RETRY_ENABLED
             and not disable_retry
             and state._critique_score < 0.7
             and not state._retried
+            and not _skip_3c_budget
         ):
             _RETRY_DELTA = 0.05   # minimum improvement required to accept retry
 
